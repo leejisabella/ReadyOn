@@ -107,6 +107,7 @@ export class BalanceStore {
   private readonly insertStmt: Statement;
   private readonly updateAvailableStmt: Statement;
   private readonly updateHoldsStmt: Statement;
+  private readonly listStaleStmt: Statement<[string, number]>;
 
   constructor(@Inject(DATABASE) db: Database) {
     this.findStmt = db.prepare(
@@ -153,6 +154,13 @@ export class BalanceStore {
           AND location_id = :locationId
           AND leave_type_id = :leaveTypeId`,
     );
+    this.listStaleStmt = db.prepare(
+      `SELECT ${SELECT_COLUMNS}
+         FROM balance
+        WHERE last_reconciled_at < ?
+        ORDER BY last_reconciled_at ASC
+        LIMIT ?`,
+    );
   }
 
   find(employeeId: string, locationId: string, leaveTypeId: string): BalanceRow | null {
@@ -164,6 +172,11 @@ export class BalanceStore {
 
   listForEmployee(employeeId: string): BalanceRow[] {
     return (this.listForEmployeeStmt.all(employeeId) as BalanceRowRaw[]).map(hydrate);
+  }
+
+  /** Balances whose `last_reconciled_at` precedes the cutoff. Used by drift sweep. */
+  listStale(beforeIso: string, limit: number = 1000): BalanceRow[] {
+    return (this.listStaleStmt.all(beforeIso, limit) as BalanceRowRaw[]).map(hydrate);
   }
 
   insert(args: InsertBalanceArgs): void {

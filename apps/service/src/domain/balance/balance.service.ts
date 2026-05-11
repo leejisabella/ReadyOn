@@ -54,6 +54,11 @@ export class BalanceService {
     return this.store.listForEmployee(employeeId);
   }
 
+  /** Balances whose last reconciliation precedes `beforeIso`. Used by the drift sweep. */
+  listStale(beforeIso: string, limit?: number): BalanceRow[] {
+    return this.store.listStale(beforeIso, limit);
+  }
+
   /**
    * Increment a hold bucket. Throws `HoldDeltaError` if the resulting bucket
    * value would be negative; throws `Error` if the balance row is absent

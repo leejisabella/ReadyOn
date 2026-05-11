@@ -16,11 +16,16 @@ export interface TimeOffRequestRow {
   readonly units: Decimal;
   readonly state: RequestState;
   readonly hcmTransactionId: string | null;
+  readonly provisionalApprovalId: string | null;
   readonly approvedBy: string | null;
   readonly approvedAt: string | null;
   readonly rejectedReason: string | null;
   readonly rejectedAt: string | null;
   readonly cancelledAt: string | null;
+  readonly escalatedAt: string | null;
+  readonly escalationReason: string | null;
+  readonly hrReviewFlag: boolean;
+  readonly hrReviewReason: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -37,11 +42,16 @@ interface TimeOffRequestRowRaw {
   units: string;
   state: RequestState;
   hcmTransactionId: string | null;
+  provisionalApprovalId: string | null;
   approvedBy: string | null;
   approvedAt: string | null;
   rejectedReason: string | null;
   rejectedAt: string | null;
   cancelledAt: string | null;
+  escalatedAt: string | null;
+  escalationReason: string | null;
+  hrReviewFlag: 0 | 1;
+  hrReviewReason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -58,34 +68,44 @@ const hydrate = (r: TimeOffRequestRowRaw): TimeOffRequestRow => ({
   units: new Decimal(r.units),
   state: r.state,
   hcmTransactionId: r.hcmTransactionId,
+  provisionalApprovalId: r.provisionalApprovalId,
   approvedBy: r.approvedBy,
   approvedAt: r.approvedAt,
   rejectedReason: r.rejectedReason,
   rejectedAt: r.rejectedAt,
   cancelledAt: r.cancelledAt,
+  escalatedAt: r.escalatedAt,
+  escalationReason: r.escalationReason,
+  hrReviewFlag: r.hrReviewFlag === 1,
+  hrReviewReason: r.hrReviewReason,
   createdAt: r.createdAt,
   updatedAt: r.updatedAt,
 });
 
 const SELECT_COLUMNS = `
   id,
-  idempotency_key   AS idempotencyKey,
-  input_hash        AS inputHash,
-  employee_id       AS employeeId,
-  location_id       AS locationId,
-  leave_type_id     AS leaveTypeId,
-  start_date        AS startDate,
-  end_date          AS endDate,
+  idempotency_key         AS idempotencyKey,
+  input_hash              AS inputHash,
+  employee_id             AS employeeId,
+  location_id             AS locationId,
+  leave_type_id           AS leaveTypeId,
+  start_date              AS startDate,
+  end_date                AS endDate,
   units,
   state,
-  hcm_transaction_id AS hcmTransactionId,
-  approved_by       AS approvedBy,
-  approved_at       AS approvedAt,
-  rejected_reason   AS rejectedReason,
-  rejected_at       AS rejectedAt,
-  cancelled_at      AS cancelledAt,
-  created_at        AS createdAt,
-  updated_at        AS updatedAt
+  hcm_transaction_id      AS hcmTransactionId,
+  provisional_approval_id AS provisionalApprovalId,
+  approved_by             AS approvedBy,
+  approved_at             AS approvedAt,
+  rejected_reason         AS rejectedReason,
+  rejected_at             AS rejectedAt,
+  cancelled_at            AS cancelledAt,
+  escalated_at            AS escalatedAt,
+  escalation_reason       AS escalationReason,
+  hr_review_flag          AS hrReviewFlag,
+  hr_review_reason        AS hrReviewReason,
+  created_at              AS createdAt,
+  updated_at              AS updatedAt
 `;
 
 export interface InsertRequestArgs {
@@ -109,6 +129,10 @@ export class RequestStore {
   private readonly markApprovedStmt: Statement;
   private readonly markRejectedStmt: Statement;
   private readonly markCancelledStmt: Statement;
+  private readonly markProvisionallyApprovedStmt: Statement;
+  private readonly markApprovedFromProvisionalStmt: Statement;
+  private readonly markEscalatedToHrStmt: Statement;
+  private readonly markTakenStmt: Statement;
 
   constructor(@Inject(DATABASE) db: Database) {
     this.findStmt = db.prepare(
@@ -147,6 +171,40 @@ export class RequestStore {
           SET state         = 'CANCELLED',
               cancelled_at  = :at,
               updated_at    = :at
+        WHERE id = :id`,
+    );
+    this.markProvisionallyApprovedStmt = db.prepare(
+      `UPDATE time_off_request
+          SET state                   = 'PROVISIONALLY_APPROVED',
+              provisional_approval_id = :provisionalApprovalId,
+              approved_by             = :approverId,
+              updated_at              = :at
+        WHERE id = :id`,
+    );
+    this.markApprovedFromProvisionalStmt = db.prepare(
+      `UPDATE time_off_request
+          SET state               = 'APPROVED',
+              approved_at         = :at,
+              hcm_transaction_id  = :hcmTransactionId,
+              updated_at          = :at
+        WHERE id = :id`,
+    );
+    this.markEscalatedToHrStmt = db.prepare(
+      `UPDATE time_off_request
+          SET state            = 'ESCALATED_TO_HR',
+              escalated_at     = :at,
+              escalation_reason = :reason,
+              hr_review_flag   = 1,
+              hr_review_reason = :reason,
+              updated_at       = :at
+        WHERE id = :id`,
+    );
+    this.markTakenStmt = db.prepare(
+      `UPDATE time_off_request
+          SET state            = 'TAKEN',
+              hr_review_flag   = :hrReviewFlag,
+              hr_review_reason = :hrReviewReason,
+              updated_at       = :at
         WHERE id = :id`,
     );
   }
@@ -195,5 +253,54 @@ export class RequestStore {
 
   markCancelled(args: { readonly id: string; readonly at: string }): void {
     this.markCancelledStmt.run(args);
+  }
+
+  markProvisionallyApproved(args: {
+    readonly id: string;
+    readonly provisionalApprovalId: string;
+    readonly approverId: string;
+    readonly at: string;
+  }): void {
+    this.markProvisionallyApprovedStmt.run(args);
+  }
+
+  /**
+   * Promote a `PROVISIONALLY_APPROVED` request to `APPROVED` after the
+   * reconciler has confirmed the HCM debit. `approved_by` is preserved from
+   * the break-glass step; only `approved_at` and `hcm_transaction_id` are set.
+   */
+  markApprovedFromProvisional(args: {
+    readonly id: string;
+    readonly hcmTransactionId: string;
+    readonly at: string;
+  }): void {
+    this.markApprovedFromProvisionalStmt.run(args);
+  }
+
+  markEscalatedToHr(args: {
+    readonly id: string;
+    readonly reason: string;
+    readonly at: string;
+  }): void {
+    this.markEscalatedToHrStmt.run(args);
+  }
+
+  /**
+   * Terminal transition for a request whose `endDate` already passed by the
+   * time the reconciler ran (TRD §9.5.5). Sets `hr_review_flag` according to
+   * whether HCM accepted or rejected.
+   */
+  markTaken(args: {
+    readonly id: string;
+    readonly hrReviewFlag: boolean;
+    readonly hrReviewReason: string | null;
+    readonly at: string;
+  }): void {
+    this.markTakenStmt.run({
+      id: args.id,
+      hrReviewFlag: args.hrReviewFlag ? 1 : 0,
+      hrReviewReason: args.hrReviewReason,
+      at: args.at,
+    });
   }
 }

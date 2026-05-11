@@ -4,11 +4,13 @@ import { DomainError } from '@time-off/domain-types';
 import type { Database } from 'better-sqlite3';
 import Decimal from 'decimal.js';
 import { HcmAdapterModule } from '../../infrastructure/hcm/hcm-adapter.module';
+import { HcmHealthMonitor, type HcmHealthMonitorOptions } from '../../infrastructure/hcm/hcm-health.monitor';
 import { DATABASE } from '../../infrastructure/persistence/database.token';
 import { DatabaseModule } from '../../infrastructure/persistence/database.module';
 import { MockHcmTestHarness } from '../../../test/helpers/mock-hcm-test-harness';
 import { BalanceModule } from '../balance/balance.module';
 import { BalanceService } from '../balance/balance.service';
+import type { ActorRole } from '../break-glass/break-glass.authorizer';
 import { EmployeeBootstrapModule } from '../employee-bootstrap/employee-bootstrap.module';
 import { EmployeeBootstrapService } from '../employee-bootstrap/employee-bootstrap.service';
 import { EmploymentModule } from '../employment/employment.module';
@@ -16,6 +18,7 @@ import { EmploymentService } from '../employment/employment.service';
 import { IdempotencyModule } from '../idempotency/idempotency.module';
 import { LeaveTypeAvailabilityModule } from '../leave-type-availability/leave-type-availability.module';
 import { LeaveTypeAvailabilityService } from '../leave-type-availability/leave-type-availability.service';
+import { ProvisionalActionStore } from '../provisional-action/provisional-action.store';
 import { RequestModule } from './request.module';
 import { RequestService, type ActorContext, type CreateTimeOffRequestInput } from './request.service';
 
@@ -28,25 +31,34 @@ interface Ctx {
   readonly employment: EmploymentService;
   readonly leaveTypes: LeaveTypeAvailabilityService;
   readonly bootstrap: EmployeeBootstrapService;
+  readonly health: HcmHealthMonitor;
+  readonly provisionalActions: ProvisionalActionStore;
   resetServiceDb(): void;
   cleanup(): Promise<void>;
 }
 
-async function buildContext(): Promise<Ctx> {
+async function buildContext(opts: {
+  breakGlassMinOutageMs?: number;
+  healthMonitor?: HcmHealthMonitorOptions;
+} = {}): Promise<Ctx> {
   const harness = await MockHcmTestHarness.boot();
   const moduleRef = await Test.createTestingModule({
     imports: [
       DatabaseModule.forRoot({ dbPath: ':memory:' }),
       HcmAdapterModule.forRoot({
         adapter: { baseUrl: harness.baseUrl, timeoutMs: 2000 },
-        healthMonitor: { unhealthyAfterFailures: 100 }, // tests don't exercise the gate
+        // Default keeps the gate dormant for the normal-path suite; the
+        // break-glass suite overrides this to drive UNHEALTHY transitions.
+        healthMonitor: opts.healthMonitor ?? { unhealthyAfterFailures: 100 },
       }),
       EmploymentModule,
       LeaveTypeAvailabilityModule,
       EmployeeBootstrapModule,
       BalanceModule,
       IdempotencyModule,
-      RequestModule,
+      RequestModule.forRoot({
+        breakGlass: { minOutageMs: opts.breakGlassMinOutageMs ?? 60_000 },
+      }),
     ],
   }).compile();
   const app = moduleRef.createNestApplication({ logger: false });
@@ -61,9 +73,12 @@ async function buildContext(): Promise<Ctx> {
     employment: app.get(EmploymentService),
     leaveTypes: app.get(LeaveTypeAvailabilityService),
     bootstrap: app.get(EmployeeBootstrapService),
+    health: app.get(HcmHealthMonitor),
+    provisionalActions: app.get(ProvisionalActionStore),
     resetServiceDb(): void {
       db.exec(
         `DELETE FROM idempotency_key;
+         DELETE FROM provisional_action;
          DELETE FROM time_off_request;
          DELETE FROM balance;
          DELETE FROM leave_type_availability;
@@ -78,7 +93,11 @@ async function buildContext(): Promise<Ctx> {
   };
 }
 
-const actor = (id: string): ActorContext => ({ actorId: id, correlationId: `corr-${id}` });
+const actor = (id: string, role: ActorRole = 'manager'): ActorContext => ({
+  actorId: id,
+  actorRole: role,
+  correlationId: `corr-${id}`,
+});
 
 const createInput = (
   overrides: Partial<CreateTimeOffRequestInput> = {},
@@ -358,6 +377,209 @@ describe('RequestService (saga, normal path)', () => {
       const second = await ctx.request.cancel(id, actor('emp-1'), 'idem-c-replay-cancel');
       expect(second).toEqual(first);
     });
+  });
+});
+
+// ── approveProvisionally (TRD §9.5.2 — break-glass) ───────────────────────
+
+describe('RequestService.approveProvisionally (break-glass)', () => {
+  let ctx: Ctx;
+  // Single fake clock drives the health monitor: nowMs advances explicitly
+  // per test to make outage durations deterministic.
+  let nowMs = Date.UTC(2026, 5, 11, 12, 0, 0);
+
+  beforeAll(async () => {
+    ctx = await buildContext({
+      breakGlassMinOutageMs: 60_000,
+      healthMonitor: {
+        unhealthyAfterFailures: 1,
+        // recovery window deliberately huge: once we flip UNHEALTHY for a
+        // case it stays that way until the next test calls resetForTest.
+        healthyAfterMs: 24 * 60 * 60 * 1000,
+        now: () => nowMs,
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await ctx.cleanup();
+  });
+
+  beforeEach(async () => {
+    nowMs = Date.UTC(2026, 5, 11, 12, 0, 0);
+    ctx.health.resetForTest();
+    ctx.resetServiceDb();
+    await ctx.harness.reset();
+    await ctx.harness.seedEmployee({
+      employeeId: 'emp-1',
+      employment: [{ locationId: 'loc-1', effectiveFrom: '2025-01-01' }],
+      balances: [{ locationId: 'loc-1', leaveTypeId: 'pto', available: '10' }],
+    });
+    await ctx.harness.seedLeaveTypeAvailability({
+      locationId: 'loc-1',
+      leaveTypeId: 'pto',
+      isActive: true,
+      effectiveFrom: '2025-01-01',
+    });
+    await ctx.bootstrap.handleEmployeeCreatedEvent({
+      employeeId: 'emp-1',
+      hcmVersion: 1n,
+      initialEmployment: { locationId: 'loc-1', effectiveFrom: '2025-01-01' },
+    });
+    ctx.leaveTypes.applyHcmUpdate({
+      locationId: 'loc-1',
+      leaveTypeId: 'pto',
+      effectiveFrom: '2025-01-01',
+      effectiveTo: null,
+      isActive: true,
+      hcmVersion: 1n,
+    });
+  });
+
+  /** Convenience: drive the monitor into UNHEALTHY with an outage of `outageMs`. */
+  const triggerOutage = (outageMs: number): void => {
+    ctx.health.recordFailure('transient'); // flips UNHEALTHY; outageStartedAt = nowMs
+    nowMs += outageMs;
+  };
+
+  async function pendingRequest(idem = 'idem-bg-create'): Promise<string> {
+    const r = await ctx.request.create(createInput(), actor('emp-1'), idem);
+    return r.id;
+  }
+
+  it('PENDING_APPROVAL → PROVISIONALLY_APPROVED: promotes pending hold to provisional and logs a ProvisionalAction', async () => {
+    const id = await pendingRequest();
+    triggerOutage(120_000); // 2-minute outage, threshold is 60s
+
+    const result = await ctx.request.approveProvisionally(
+      id,
+      'HCM offline – approving so emp can fly out tonight',
+      actor('mgr-1', 'break_glass_approver'),
+      'idem-bg-1',
+    );
+
+    expect(result.state).toBe('PROVISIONALLY_APPROVED');
+    expect(result.approvedBy).toBe('mgr-1');
+    expect(result.provisionalApprovalId).toMatch(/^[0-9a-f-]{36}$/);
+
+    const balance = ctx.balance.get('emp-1', 'loc-1', 'pto');
+    expect(balance?.holds.pending.toFixed()).toBe('0');
+    expect(balance?.holds.provisional.toFixed()).toBe('3');
+    expect(balance?.available.toFixed()).toBe('10'); // unchanged until reconciliation
+
+    const actions = ctx.provisionalActions.findByRequestId(id);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      type: 'BREAK_GLASS_APPROVAL',
+      invokedBy: 'mgr-1',
+      reason: 'HCM offline – approving so emp can fly out tonight',
+      reconciliationState: 'PENDING',
+    });
+    expect(actions[0]!.localStateSnapshot).toMatchObject({
+      balance: { available: '10', pendingHold: '3' },
+    });
+  });
+
+  it('throws BREAK_GLASS_NOT_AUTHORIZED when the actor lacks the break_glass_approver role', async () => {
+    const id = await pendingRequest();
+    triggerOutage(120_000);
+    await expect(
+      ctx.request.approveProvisionally(id, 'any reason', actor('mgr-1', 'manager'), 'idem-bg-na'),
+    ).rejects.toMatchObject({ code: 'BREAK_GLASS_NOT_AUTHORIZED' });
+  });
+
+  it('throws BREAK_GLASS_OUTAGE_THRESHOLD_NOT_MET when HCM is healthy', async () => {
+    const id = await pendingRequest();
+    // no triggerOutage — monitor stays HEALTHY after resetForTest
+    await expect(
+      ctx.request.approveProvisionally(
+        id,
+        'trying without an outage',
+        actor('mgr-1', 'break_glass_approver'),
+        'idem-bg-healthy',
+      ),
+    ).rejects.toMatchObject({
+      code: 'BREAK_GLASS_OUTAGE_THRESHOLD_NOT_MET',
+      details: { reason: 'HCM_HEALTHY' },
+    });
+  });
+
+  it('throws BREAK_GLASS_OUTAGE_THRESHOLD_NOT_MET when the outage is shorter than minOutageMs', async () => {
+    const id = await pendingRequest();
+    triggerOutage(30_000); // 30s < 60s threshold
+    await expect(
+      ctx.request.approveProvisionally(
+        id,
+        'outage too short',
+        actor('mgr-1', 'break_glass_approver'),
+        'idem-bg-short',
+      ),
+    ).rejects.toMatchObject({
+      code: 'BREAK_GLASS_OUTAGE_THRESHOLD_NOT_MET',
+      details: { outageMs: 30_000, requiredMs: 60_000 },
+    });
+  });
+
+  it('rejects self-approval even with the right role', async () => {
+    const id = await pendingRequest();
+    triggerOutage(120_000);
+    await expect(
+      ctx.request.approveProvisionally(
+        id,
+        'I am the requester',
+        actor('emp-1', 'break_glass_approver'),
+        'idem-bg-self',
+      ),
+    ).rejects.toMatchObject({ code: 'STATE_TRANSITION_NOT_ALLOWED' });
+  });
+
+  it('rejects empty/whitespace-only justification', async () => {
+    const id = await pendingRequest();
+    triggerOutage(120_000);
+    await expect(
+      ctx.request.approveProvisionally(
+        id,
+        '   ',
+        actor('mgr-1', 'break_glass_approver'),
+        'idem-bg-empty',
+      ),
+    ).rejects.toMatchObject({ code: 'STATE_TRANSITION_NOT_ALLOWED' });
+  });
+
+  it('rejects a non-PENDING_APPROVAL request', async () => {
+    const id = await pendingRequest();
+    await ctx.request.approve(id, actor('mgr-1', 'manager'), 'idem-bg-already-approved');
+    triggerOutage(120_000);
+    await expect(
+      ctx.request.approveProvisionally(
+        id,
+        'too late',
+        actor('mgr-2', 'break_glass_approver'),
+        'idem-bg-too-late',
+      ),
+    ).rejects.toMatchObject({ code: 'STATE_TRANSITION_NOT_ALLOWED' });
+  });
+
+  it('replays the cached result on idempotent retry', async () => {
+    const id = await pendingRequest();
+    triggerOutage(120_000);
+    const first = await ctx.request.approveProvisionally(
+      id,
+      'outage approval',
+      actor('mgr-1', 'break_glass_approver'),
+      'idem-bg-replay',
+    );
+    const second = await ctx.request.approveProvisionally(
+      id,
+      'outage approval',
+      actor('mgr-1', 'break_glass_approver'),
+      'idem-bg-replay',
+    );
+    expect(second.id).toBe(first.id);
+    expect(second.provisionalApprovalId).toBe(first.provisionalApprovalId);
+    // hold promoted exactly once
+    expect(ctx.balance.get('emp-1', 'loc-1', 'pto')?.holds.provisional.toFixed()).toBe('3');
+    expect(ctx.provisionalActions.findByRequestId(id)).toHaveLength(1);
   });
 });
 

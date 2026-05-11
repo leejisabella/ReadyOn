@@ -101,6 +101,22 @@ export class HcmHealthMonitor {
   }
 
   /**
+   * Test seam: drop back to the initial `HEALTHY` state, clearing the outage
+   * clock, failure counter, and recovery window. Production code does not
+   * call this — state is otherwise driven by `recordSuccess`/`recordFailure`.
+   */
+  resetForTest(): void {
+    const wasUnhealthy = this.state === 'UNHEALTHY';
+    this.state = 'HEALTHY';
+    this.consecutiveFailures = 0;
+    this.outageStarted = null;
+    this.recoveryWindowStartedAt = null;
+    if (wasUnhealthy) {
+      for (const listener of this.listeners) listener('HEALTHY');
+    }
+  }
+
+  /**
    * Subscribe to HEALTHY ↔ UNHEALTHY transitions. The listener fires only on
    * state changes, not on every recorded outcome. Returns an unsubscribe fn.
    */

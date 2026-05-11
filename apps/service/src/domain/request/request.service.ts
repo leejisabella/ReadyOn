@@ -16,18 +16,25 @@ import {
 } from '@time-off/decimal-scalar';
 import Decimal from 'decimal.js';
 import { HCM_PORT } from '../../infrastructure/hcm/hcm-adapter.module';
+import { HcmHealthMonitor } from '../../infrastructure/hcm/hcm-health.monitor';
 import { DATABASE } from '../../infrastructure/persistence/database.token';
 import { BalanceService } from '../balance/balance.service';
+import {
+  BreakGlassAuthorizer,
+  type ActorRole,
+} from '../break-glass/break-glass.authorizer';
 import { EmployeeBootstrapService } from '../employee-bootstrap/employee-bootstrap.service';
 import { EmploymentService } from '../employment/employment.service';
 import { IdempotencyService } from '../idempotency/idempotency.service';
 import { LeaveTypeAvailabilityService } from '../leave-type-availability/leave-type-availability.service';
+import { ProvisionalActionStore } from '../provisional-action/provisional-action.store';
 import { RequestStateMachine } from './request-state-machine';
 import { RequestStore, type TimeOffRequestRow } from './request.store';
 
 /** Caller-supplied envelope tagged onto every mutation for audit + role checks. */
 export interface ActorContext {
   readonly actorId: string;
+  readonly actorRole: ActorRole;
   readonly correlationId: string;
 }
 
@@ -71,6 +78,12 @@ const CANCEL_SPEC: FieldKind = fk.object({
   actorId: fk.string,
 });
 
+const APPROVE_PROVISIONALLY_SPEC: FieldKind = fk.object({
+  requestId: fk.string,
+  approverId: fk.string,
+  justification: fk.string,
+});
+
 /**
  * The request lifecycle saga (TRD §9.1–§9.4, normal path).
  *
@@ -101,6 +114,9 @@ export class RequestService {
     private readonly bootstrap: EmployeeBootstrapService,
     private readonly balance: BalanceService,
     private readonly idempotency: IdempotencyService,
+    private readonly breakGlass: BreakGlassAuthorizer,
+    private readonly provisionalActions: ProvisionalActionStore,
+    private readonly health: HcmHealthMonitor,
     @Inject(HCM_PORT) private readonly hcm: HcmPort,
     @Inject(DATABASE) private readonly db: Database,
   ) {}
@@ -245,6 +261,131 @@ export class RequestService {
         id: requestId,
         approverId: ctx.actorId,
         hcmTransactionId: hcmResponse.transactionId,
+        at,
+      });
+      this.idempotency.remember(idempotencyKey, inputHash, { requestId });
+    })();
+
+    return this.mustFind(requestId);
+  }
+
+  // ── approveProvisionally (TRD §9.5.2) ────────────────────────────────────
+
+  /**
+   * Break-glass approval during sustained HCM outage. The decision is
+   * recorded as an append-only `ProvisionalAction` event; the request flips
+   * to `PROVISIONALLY_APPROVED` and the pending hold is promoted to the
+   * `provisional` bucket. The provisional reconciler (Slice 16) drains the
+   * event back to HCM on recovery.
+   *
+   * @throws DomainError(BREAK_GLASS_NOT_AUTHORIZED) when the caller lacks role.
+   * @throws DomainError(BREAK_GLASS_OUTAGE_THRESHOLD_NOT_MET) when HCM is
+   *   healthy or the outage is shorter than `minOutageMs`.
+   * @throws DomainError(STATE_TRANSITION_NOT_ALLOWED) on self-approval,
+   *   empty justification, or a non-PENDING_APPROVAL request.
+   */
+  async approveProvisionally(
+    requestId: string,
+    justification: string,
+    ctx: ActorContext,
+    idempotencyKey: string,
+  ): Promise<TimeOffRequestRow> {
+    const trimmedJustification = justification.trim();
+    const inputHash = this.serializer.hash(
+      { requestId, approverId: ctx.actorId, justification: trimmedJustification },
+      APPROVE_PROVISIONALLY_SPEC,
+    );
+    const replay = this.checkReplay(idempotencyKey, inputHash);
+    if (replay) return replay;
+
+    if (trimmedJustification.length === 0) {
+      throw new DomainError({
+        code: 'STATE_TRANSITION_NOT_ALLOWED',
+        message: 'justification is required for break-glass approval',
+      });
+    }
+
+    const auth = this.breakGlass.authorize({ actorRole: ctx.actorRole });
+    switch (auth.kind) {
+      case 'NOT_AUTHORIZED':
+        throw new DomainError({ code: 'BREAK_GLASS_NOT_AUTHORIZED' });
+      case 'HCM_HEALTHY':
+      case 'OUTAGE_THRESHOLD_NOT_MET':
+        throw new DomainError({
+          code: 'BREAK_GLASS_OUTAGE_THRESHOLD_NOT_MET',
+          details: auth.kind === 'OUTAGE_THRESHOLD_NOT_MET'
+            ? { outageMs: auth.outageMs, requiredMs: auth.requiredMs }
+            : { reason: 'HCM_HEALTHY' },
+        });
+      case 'OK':
+        break;
+    }
+
+    const request = this.requireRequest(requestId);
+    if (ctx.actorId === request.employeeId) {
+      throw new DomainError({
+        code: 'STATE_TRANSITION_NOT_ALLOWED',
+        message: 'self-approval is prohibited',
+      });
+    }
+    RequestStateMachine.assertTransition(request.state, 'PROVISIONALLY_APPROVED');
+
+    const balanceRow = this.balance.get(
+      request.employeeId,
+      request.locationId,
+      request.leaveTypeId,
+    );
+    if (balanceRow === null) {
+      throw new Error(
+        `BalanceService: no balance exists for break-glass approval of ${requestId}`,
+      );
+    }
+    const employmentPeriod =
+      this.employment
+        .history(request.employeeId)
+        .find(
+          (p) =>
+            p.effectiveFrom <= request.startDate &&
+            (p.effectiveTo === null || p.effectiveTo >= request.endDate),
+        ) ?? null;
+
+    const provisionalActionId = randomUUID();
+    const at = new Date().toISOString();
+    const outageStarted = this.health.outageStartedAt() ?? new Date();
+
+    this.db.transaction(() => {
+      this.provisionalActions.insert({
+        id: provisionalActionId,
+        type: 'BREAK_GLASS_APPROVAL',
+        requestId,
+        invokedBy: ctx.actorId,
+        invokedAt: at,
+        reason: trimmedJustification,
+        outageStartObservedAt: outageStarted.toISOString(),
+        localStateSnapshot: {
+          balance: serializeBalanceRow(balanceRow),
+          request: serializeRequestRow(request),
+          employmentPeriod: employmentPeriod
+            ? {
+                locationId: employmentPeriod.locationId,
+                effectiveFrom: employmentPeriod.effectiveFrom,
+                effectiveTo: employmentPeriod.effectiveTo,
+              }
+            : null,
+        },
+      });
+      this.balance.promoteHold(
+        request.employeeId,
+        request.locationId,
+        request.leaveTypeId,
+        request.units,
+        'pending',
+        'provisional',
+      );
+      this.store.markProvisionallyApproved({
+        id: requestId,
+        provisionalApprovalId: provisionalActionId,
+        approverId: ctx.actorId,
         at,
       });
       this.idempotency.remember(idempotencyKey, inputHash, { requestId });
@@ -459,4 +600,35 @@ export class RequestService {
     if (row === null) throw new Error(`internal: request ${id} disappeared mid-saga`);
     return row;
   }
+}
+
+// ─── Snapshot serialization (JSON-safe forms) ───────────────────────────────
+
+function serializeBalanceRow(
+  row: import('../balance/balance.store').BalanceRow,
+): Readonly<Record<string, unknown>> {
+  return {
+    employeeId: row.employeeId,
+    locationId: row.locationId,
+    leaveTypeId: row.leaveTypeId,
+    available: row.available.toFixed(),
+    pendingHold: row.holds.pending.toFixed(),
+    approvedHold: row.holds.approved.toFixed(),
+    provisionalHold: row.holds.provisional.toFixed(),
+    hcmVersion: row.hcmVersion.toString(),
+    state: row.state,
+  };
+}
+
+function serializeRequestRow(row: TimeOffRequestRow): Readonly<Record<string, unknown>> {
+  return {
+    id: row.id,
+    employeeId: row.employeeId,
+    locationId: row.locationId,
+    leaveTypeId: row.leaveTypeId,
+    startDate: row.startDate,
+    endDate: row.endDate,
+    units: row.units.toFixed(),
+    state: row.state,
+  };
 }

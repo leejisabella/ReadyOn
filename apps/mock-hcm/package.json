@@ -4,7 +4,8 @@
   "private": true,
   "description": "Mock HCM partner for the Time-Off service. Separate process, own SQLite store, configurable adversarial modes.",
   "license": "UNLICENSED",
-  "main": "dist/main.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -b",
     "start": "node dist/main.js",

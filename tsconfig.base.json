@@ -36,7 +36,9 @@
       "@time-off/hcm-port": ["libs/hcm-port/src"],
       "@time-off/hcm-port/*": ["libs/hcm-port/src/*"],
       "@time-off/decimal-scalar": ["libs/decimal-scalar/src"],
-      "@time-off/decimal-scalar/*": ["libs/decimal-scalar/src/*"]
+      "@time-off/decimal-scalar/*": ["libs/decimal-scalar/src/*"],
+      "@time-off/mock-hcm": ["apps/mock-hcm/src"],
+      "@time-off/mock-hcm/*": ["apps/mock-hcm/src/*"]
     }
   }
 }

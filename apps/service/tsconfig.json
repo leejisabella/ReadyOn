@@ -12,6 +12,7 @@
   "references": [
     { "path": "../../libs/domain-types" },
     { "path": "../../libs/hcm-port" },
-    { "path": "../../libs/decimal-scalar" }
+    { "path": "../../libs/decimal-scalar" },
+    { "path": "../mock-hcm" }
   ]
 }

@@ -14,6 +14,8 @@ const config: Config = {
     '^@time-off/hcm-port/(.*)$': '<rootDir>/libs/hcm-port/src/$1',
     '^@time-off/decimal-scalar$': '<rootDir>/libs/decimal-scalar/src',
     '^@time-off/decimal-scalar/(.*)$': '<rootDir>/libs/decimal-scalar/src/$1',
+    '^@time-off/mock-hcm$': '<rootDir>/apps/mock-hcm/src',
+    '^@time-off/mock-hcm/(.*)$': '<rootDir>/apps/mock-hcm/src/$1',
   },
   passWithNoTests: true,
   clearMocks: true,

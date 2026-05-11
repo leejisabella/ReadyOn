@@ -24,6 +24,7 @@
     "zod": "^3.22.4"
   },
   "devDependencies": {
-    "@nestjs/testing": "^10.3.7"
+    "@nestjs/testing": "^10.3.7",
+    "@time-off/mock-hcm": "*"
   }
 }

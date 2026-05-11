@@ -48,6 +48,89 @@ const DeleteEmployeeSchema = z
   .object({ employeeId: z.string().min(1) })
   .strict();
 
+const SetTransactionSchema = z
+  .object({
+    transactionId: z.string().min(1),
+    idempotencyKey: z.string().min(1).nullable().optional(),
+    employeeId: z.string().min(1),
+    locationId: z.string().min(1),
+    leaveTypeId: z.string().min(1),
+    deltaApplied: z.string().min(1),
+    newAvailable: z.string().min(1),
+    hcmVersion: z.string().regex(/^\d+$/),
+    appliedAt: z.string().min(1),
+    outcome: z.enum(['ACCEPTED', 'REJECTED']).optional(),
+    rejectionReason: z.string().nullable().optional(),
+  })
+  .strict();
+
+const SnapshotSchema = z
+  .object({
+    currentHcmVersion: z.string().regex(/^\d+$/),
+    employees: z.array(
+      z
+        .object({
+          employeeId: z.string().min(1),
+          hcmVersion: z.string().regex(/^\d+$/),
+          createdAt: z.string().min(1),
+        })
+        .strict(),
+    ),
+    employment: z.array(
+      z
+        .object({
+          employeeId: z.string().min(1),
+          locationId: z.string().min(1),
+          effectiveFrom: z.string().min(1),
+          effectiveTo: z.string().nullable(),
+          hcmVersion: z.string().regex(/^\d+$/),
+        })
+        .strict(),
+    ),
+    leaveTypes: z.array(
+      z
+        .object({
+          locationId: z.string().min(1),
+          leaveTypeId: z.string().min(1),
+          isActive: z.boolean(),
+          effectiveFrom: z.string().min(1),
+          effectiveTo: z.string().nullable(),
+          hcmVersion: z.string().regex(/^\d+$/),
+        })
+        .strict(),
+    ),
+    balances: z.array(
+      z
+        .object({
+          employeeId: z.string().min(1),
+          locationId: z.string().min(1),
+          leaveTypeId: z.string().min(1),
+          available: z.string().min(1),
+          hcmVersion: z.string().regex(/^\d+$/),
+          appliedAt: z.string().min(1),
+        })
+        .strict(),
+    ),
+    transactions: z.array(
+      z
+        .object({
+          transactionId: z.string().min(1),
+          idempotencyKey: z.string().nullable(),
+          employeeId: z.string().min(1),
+          locationId: z.string().min(1),
+          leaveTypeId: z.string().min(1),
+          deltaApplied: z.string().min(1),
+          newAvailable: z.string().min(1),
+          hcmVersion: z.string().regex(/^\d+$/),
+          appliedAt: z.string().min(1),
+          outcome: z.enum(['ACCEPTED', 'REJECTED']),
+          rejectionReason: z.string().nullable(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
 /**
  * Test-driving admin surface. Every endpoint is idempotent (upsert semantics)
  * so test setup is order-independent.
@@ -139,6 +222,99 @@ export class AdminController {
   @HttpCode(204)
   reset(): void {
     resetSchema(this.db);
+  }
+
+  /**
+   * Insert a synthetic transaction (used by Layer 21 to test the
+   * `queryTransactions` history-window boundary, Rev 3.1 Q.κ). The endpoint
+   * accepts both ACCEPTED and REJECTED outcomes so tests can plant either.
+   */
+  @Post('setTransaction')
+  @HttpCode(204)
+  setTransaction(
+    @Body(new ZodPipe(SetTransactionSchema)) body: z.output<typeof SetTransactionSchema>,
+  ): void {
+    this.transactions.insert({
+      transactionId: body.transactionId,
+      idempotencyKey: body.idempotencyKey ?? null,
+      employeeId: body.employeeId,
+      locationId: body.locationId,
+      leaveTypeId: body.leaveTypeId,
+      deltaApplied: new Decimal(body.deltaApplied),
+      newAvailable: new Decimal(body.newAvailable),
+      hcmVersion: BigInt(body.hcmVersion),
+      appliedAt: body.appliedAt,
+      outcome: body.outcome ?? 'ACCEPTED',
+      rejectionReason: body.rejectionReason ?? null,
+      statusCode: body.outcome === 'REJECTED' ? 400 : 200,
+      responseBody: { transactionId: body.transactionId },
+    });
+  }
+
+  /**
+   * Restore the full mock state from a {@link state} snapshot. The mock is
+   * reset first, then every row is replayed and the hcmVersion counter is
+   * pinned to the snapshot's value. Used by crash-recovery tests
+   * (`MockHcmTestHarness.restoreSnapshot`).
+   */
+  @Post('restoreState')
+  @HttpCode(204)
+  restoreState(@Body(new ZodPipe(SnapshotSchema)) snap: z.output<typeof SnapshotSchema>): void {
+    resetSchema(this.db);
+    for (const e of snap.employees) {
+      this.employees.insert({
+        employeeId: e.employeeId,
+        hcmVersion: BigInt(e.hcmVersion),
+        createdAt: e.createdAt,
+      });
+    }
+    for (const p of snap.employment) {
+      this.employment.upsert({
+        employeeId: p.employeeId,
+        locationId: p.locationId,
+        effectiveFrom: p.effectiveFrom,
+        effectiveTo: p.effectiveTo,
+        hcmVersion: BigInt(p.hcmVersion),
+      });
+    }
+    for (const l of snap.leaveTypes) {
+      this.leaveTypes.upsert({
+        locationId: l.locationId,
+        leaveTypeId: l.leaveTypeId,
+        isActive: l.isActive,
+        effectiveFrom: l.effectiveFrom,
+        effectiveTo: l.effectiveTo,
+        hcmVersion: BigInt(l.hcmVersion),
+      });
+    }
+    for (const b of snap.balances) {
+      this.balances.upsert({
+        employeeId: b.employeeId,
+        locationId: b.locationId,
+        leaveTypeId: b.leaveTypeId,
+        available: new Decimal(b.available),
+        hcmVersion: BigInt(b.hcmVersion),
+        appliedAt: b.appliedAt,
+      });
+    }
+    for (const t of snap.transactions) {
+      this.transactions.insert({
+        transactionId: t.transactionId,
+        idempotencyKey: t.idempotencyKey,
+        employeeId: t.employeeId,
+        locationId: t.locationId,
+        leaveTypeId: t.leaveTypeId,
+        deltaApplied: new Decimal(t.deltaApplied),
+        newAvailable: new Decimal(t.newAvailable),
+        hcmVersion: BigInt(t.hcmVersion),
+        appliedAt: t.appliedAt,
+        outcome: t.outcome,
+        rejectionReason: t.rejectionReason,
+        statusCode: t.outcome === 'REJECTED' ? 400 : 200,
+        responseBody: { transactionId: t.transactionId },
+      });
+    }
+    this.versions.setTo(BigInt(snap.currentHcmVersion));
   }
 
   @Get('state')

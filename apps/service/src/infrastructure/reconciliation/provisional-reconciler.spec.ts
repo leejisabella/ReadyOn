@@ -422,4 +422,156 @@ describe('ProvisionalReconciler', () => {
     // was touched and the snapshot reflects either outcome.
     expect(['CONFIRMED', 'PENDING']).toContain(action.reconciliationState);
   });
+
+  // ── PROVISIONAL_CANCELLATION end-to-end (TRD §9.5.4) ───────────────────
+
+  describe('PROVISIONAL_CANCELLATION saga drain', () => {
+    /** Walk an APPROVED request, then issue cancelProvisionally. */
+    async function approvedThenCancelProvisionally(): Promise<{
+      requestId: string;
+      cancellationActionId: string;
+    }> {
+      await ctx.harness.seedEmployee({
+        employeeId: 'emp-1',
+        employment: [{ locationId: 'loc-1', effectiveFrom: '2025-01-01' }],
+        balances: [{ locationId: 'loc-1', leaveTypeId: 'pto', available: '10' }],
+      });
+      await ctx.harness.seedLeaveTypeAvailability({
+        locationId: 'loc-1',
+        leaveTypeId: 'pto',
+        isActive: true,
+        effectiveFrom: '2025-01-01',
+      });
+      await ctx.bootstrap.handleEmployeeCreatedEvent({
+        employeeId: 'emp-1',
+        hcmVersion: 1n,
+        initialEmployment: { locationId: 'loc-1', effectiveFrom: '2025-01-01' },
+      });
+      ctx.leaveTypes.applyHcmUpdate({
+        locationId: 'loc-1',
+        leaveTypeId: 'pto',
+        effectiveFrom: '2025-01-01',
+        effectiveTo: null,
+        isActive: true,
+        hcmVersion: 1n,
+      });
+      const created = await ctx.request.create(
+        {
+          employeeId: 'emp-1',
+          leaveTypeId: 'pto',
+          startDate: '2026-05-15',
+          endDate: '2026-05-17',
+          units: new Decimal('3'),
+        },
+        { actorId: 'emp-1', actorRole: 'employee', correlationId: 'corr-1' },
+        `idem-c-${Math.random()}`,
+      );
+      await ctx.request.approve(
+        created.id,
+        { actorId: 'mgr-1', actorRole: 'manager', correlationId: 'corr-1' },
+        `idem-a-${Math.random()}`,
+      );
+      const after = await ctx.request.cancelProvisionally(
+        created.id,
+        { actorId: 'emp-1', actorRole: 'employee', correlationId: 'corr-1' },
+        `idem-pc-${Math.random()}`,
+        { acknowledgedHcmUnavailable: true },
+      );
+      const actions = ctx.actions.findByRequestId(after.id);
+      const cancellation = actions.find((a) => a.type === 'PROVISIONAL_CANCELLATION')!;
+      return { requestId: after.id, cancellationActionId: cancellation.id };
+    }
+
+    it('HCM credits the release → request CANCELLED, balance reflects the credit, no hold release needed', async () => {
+      const { requestId, cancellationActionId } = await approvedThenCancelProvisionally();
+
+      const result = await ctx.reconciler.tick();
+      expect(result).toMatchObject({ inspected: 1, confirmed: 1, escalated: 0 });
+
+      expect(ctx.requests.find(requestId)?.state).toBe('CANCELLED');
+      expect(ctx.actions.find(cancellationActionId)?.reconciliationState).toBe('CONFIRMED');
+
+      const balance = ctx.balance.get('emp-1', 'loc-1', 'pto')!;
+      // HCM credited the 3 back; local balance now matches.
+      expect(balance.available.toFixed()).toBe('10');
+      expect(balance.holds.provisional.toFixed()).toBe('0');
+      expect(balance.holds.approved.toFixed()).toBe('0');
+
+      const steps = ctx.steps.listForAction(cancellationActionId).map((s) => s.kind);
+      expect(steps).toEqual(['HCM_HISTORY_QUERIED', 'HCM_CALL_IN_FLIGHT', 'OUTCOME_APPLIED']);
+    });
+
+    it('saga-driven pair coalescing: approveProvisionally then cancelProvisionally on the same request → both NO_OP', async () => {
+      // Build a PROVISIONALLY_APPROVED request via the break-glass saga.
+      await ctx.harness.seedEmployee({
+        employeeId: 'emp-1',
+        employment: [{ locationId: 'loc-1', effectiveFrom: '2025-01-01' }],
+        balances: [{ locationId: 'loc-1', leaveTypeId: 'pto', available: '10' }],
+      });
+      await ctx.harness.seedLeaveTypeAvailability({
+        locationId: 'loc-1',
+        leaveTypeId: 'pto',
+        isActive: true,
+        effectiveFrom: '2025-01-01',
+      });
+      await ctx.bootstrap.handleEmployeeCreatedEvent({
+        employeeId: 'emp-1',
+        hcmVersion: 1n,
+        initialEmployment: { locationId: 'loc-1', effectiveFrom: '2025-01-01' },
+      });
+      ctx.leaveTypes.applyHcmUpdate({
+        locationId: 'loc-1',
+        leaveTypeId: 'pto',
+        effectiveFrom: '2025-01-01',
+        effectiveTo: null,
+        isActive: true,
+        hcmVersion: 1n,
+      });
+      const created = await ctx.request.create(
+        {
+          employeeId: 'emp-1',
+          leaveTypeId: 'pto',
+          startDate: '2026-05-15',
+          endDate: '2026-05-17',
+          units: new Decimal('3'),
+        },
+        { actorId: 'emp-1', actorRole: 'employee', correlationId: 'corr-1' },
+        'idem-c-pair',
+      );
+      ctx.health.recordFailure('transient');
+      setNow(now() + 120_000);
+      const provisional = await ctx.request.approveProvisionally(
+        created.id,
+        'outage approval',
+        { actorId: 'mgr-1', actorRole: 'break_glass_approver', correlationId: 'corr-1' },
+        'idem-bg-pair',
+      );
+      const cancelled = await ctx.request.cancelProvisionally(
+        created.id,
+        { actorId: 'emp-1', actorRole: 'employee', correlationId: 'corr-1' },
+        'idem-pc-pair',
+        { acknowledgedHcmUnavailable: true },
+      );
+      expect(cancelled.state).toBe('CANCELLATION_PENDING');
+
+      const result = await ctx.reconciler.tick();
+      expect(result).toMatchObject({ noOps: 2, confirmed: 0, escalated: 0 });
+
+      expect(ctx.requests.find(created.id)?.state).toBe('CANCELLED');
+      // Both actions terminate as NO_OP via pair coalescing.
+      const byType = new Map(
+        ctx.actions.findByRequestId(created.id).map((a) => [a.type, a.reconciliationState]),
+      );
+      expect(byType.get('BREAK_GLASS_APPROVAL')).toBe('NO_OP');
+      expect(byType.get('PROVISIONAL_CANCELLATION')).toBe('NO_OP');
+
+      // Balance: pair coalescing releases the provisional hold from the
+      // original break-glass approval. Available is HCM's pre-debit view
+      // (10) because HCM never confirmed anything.
+      expect(ctx.balance.get('emp-1', 'loc-1', 'pto')?.holds.provisional.toFixed()).toBe('0');
+
+      // Sanity: provisional cancellation step log shows PAIR_COALESCED.
+      expect(ctx.steps.findLast(provisional.provisionalApprovalId!)?.kind).toBe('PAIR_COALESCED');
+    });
+  });
 });

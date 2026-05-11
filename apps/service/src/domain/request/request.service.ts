@@ -84,23 +84,32 @@ const APPROVE_PROVISIONALLY_SPEC: FieldKind = fk.object({
   justification: fk.string,
 });
 
+const CANCEL_PROVISIONALLY_SPEC: FieldKind = fk.object({
+  requestId: fk.string,
+  actorId: fk.string,
+  acknowledgedHcmUnavailable: fk.string,
+});
+
 /**
- * The request lifecycle saga (TRD §9.1–§9.4, normal path).
+ * The request lifecycle saga.
+ *
+ *  - `create` / `approve` / `reject` / `cancel`           (TRD §9.1–§9.4)
+ *  - `approveProvisionally` (break-glass)                 (TRD §9.5.1–§9.5.2)
+ *  - `cancelProvisionally` (provisional cancellation)     (TRD §9.5.4)
  *
  * Every mutation has the same shape:
  *  1. Compute a canonical hash of the inputs and look up the idempotency
  *     cache — `replay` returns the prior result, `conflict` raises
  *     `IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_INPUT`.
- *  2. Validate inputs and resolve the dimensions (employment, leave type).
- *  3. Call HCM when the operation is dispositive (approve, cancel-of-approved);
- *     map error categories onto `DomainError` codes.
+ *  2. Validate inputs and resolve dimensions (employment, leave type, role).
+ *  3. Call HCM when the operation is dispositive (`approve`, `cancel`
+ *     of an `APPROVED` request); on outage, route through the provisional
+ *     path which defers the HCM call to the reconciler.
  *  4. Atomically (single SQLite transaction) update the request row, the
- *     balance buckets, and stamp the idempotency cache.
+ *     balance buckets, the provisional-action log (if applicable), and
+ *     stamp the idempotency cache.
  *
- * Break-glass, the outbox-driven async commit path, and CANCELLATION_PENDING
- * are deferred to Slices 13–15.
- *
- * @ref docs/01_TRD.md §9.1–§9.4, §14.1
+ * @ref docs/01_TRD.md §9.1–§9.5, §14.1
  * @ref docs/04_Module_Plan.md §3.2
  */
 @Injectable()
@@ -330,28 +339,11 @@ export class RequestService {
     }
     RequestStateMachine.assertTransition(request.state, 'PROVISIONALLY_APPROVED');
 
-    const balanceRow = this.balance.get(
-      request.employeeId,
-      request.locationId,
-      request.leaveTypeId,
-    );
-    if (balanceRow === null) {
-      throw new Error(
-        `BalanceService: no balance exists for break-glass approval of ${requestId}`,
-      );
-    }
-    const employmentPeriod =
-      this.employment
-        .history(request.employeeId)
-        .find(
-          (p) =>
-            p.effectiveFrom <= request.startDate &&
-            (p.effectiveTo === null || p.effectiveTo >= request.endDate),
-        ) ?? null;
+    const snapshot = this.buildOutageSnapshot(request, 'break-glass approval');
 
     const provisionalActionId = randomUUID();
     const at = new Date().toISOString();
-    const outageStarted = this.health.outageStartedAt() ?? new Date();
+    const outageStarted = (this.health.outageStartedAt() ?? new Date()).toISOString();
 
     this.db.transaction(() => {
       this.provisionalActions.insert({
@@ -361,18 +353,8 @@ export class RequestService {
         invokedBy: ctx.actorId,
         invokedAt: at,
         reason: trimmedJustification,
-        outageStartObservedAt: outageStarted.toISOString(),
-        localStateSnapshot: {
-          balance: serializeBalanceRow(balanceRow),
-          request: serializeRequestRow(request),
-          employmentPeriod: employmentPeriod
-            ? {
-                locationId: employmentPeriod.locationId,
-                effectiveFrom: employmentPeriod.effectiveFrom,
-                effectiveTo: employmentPeriod.effectiveTo,
-              }
-            : null,
-        },
+        outageStartObservedAt: outageStarted,
+        localStateSnapshot: snapshot,
       });
       this.balance.promoteHold(
         request.employeeId,
@@ -388,6 +370,80 @@ export class RequestService {
         approverId: ctx.actorId,
         at,
       });
+      this.idempotency.remember(idempotencyKey, inputHash, { requestId });
+    })();
+
+    return this.mustFind(requestId);
+  }
+
+  // ── cancelProvisionally (TRD §9.5.4) ─────────────────────────────────────
+
+  /**
+   * Asymmetric counterpart of `approveProvisionally`. Records a
+   * `PROVISIONAL_CANCELLATION` event and transitions the request to
+   * `CANCELLATION_PENDING`; the provisional reconciler issues `releaseBalance`
+   * to HCM on recovery and settles to `CANCELLED` (TRD §9.5.4).
+   *
+   * Unlike break-glass approval, this is a credit operation — no role gate,
+   * no minimum-outage threshold. The single guardrail is the UI-contract
+   * acknowledgement (TRD §9.5.4, Q.α).
+   *
+   * @throws DomainError(CANCEL_DURING_OUTAGE_REQUIRES_ACKNOWLEDGMENT) when
+   *   `acknowledgedHcmUnavailable` is not `true`.
+   * @throws DomainError(STATE_TRANSITION_NOT_ALLOWED) when the request's
+   *   current state cannot transition to `CANCELLATION_PENDING` (only
+   *   `APPROVED` and `PROVISIONALLY_APPROVED` can).
+   * @throws DomainError(TERMINAL_STATE_REACHED) when the request is terminal.
+   */
+  async cancelProvisionally(
+    requestId: string,
+    ctx: ActorContext,
+    idempotencyKey: string,
+    options: { readonly acknowledgedHcmUnavailable: boolean },
+  ): Promise<TimeOffRequestRow> {
+    if (!options.acknowledgedHcmUnavailable) {
+      throw new DomainError({ code: 'CANCEL_DURING_OUTAGE_REQUIRES_ACKNOWLEDGMENT' });
+    }
+    const inputHash = this.serializer.hash(
+      { requestId, actorId: ctx.actorId, acknowledgedHcmUnavailable: 'true' },
+      CANCEL_PROVISIONALLY_SPEC,
+    );
+    const replay = this.checkReplay(idempotencyKey, inputHash);
+    if (replay) return replay;
+
+    const request = this.requireRequest(requestId);
+    if (RequestStateMachine.isTerminal(request.state)) {
+      throw new DomainError({
+        code: 'TERMINAL_STATE_REACHED',
+        message: `request is already in terminal state ${request.state}`,
+      });
+    }
+    RequestStateMachine.assertTransition(request.state, 'CANCELLATION_PENDING');
+
+    const snapshot = this.buildOutageSnapshot(request, 'provisional cancellation');
+
+    const provisionalActionId = randomUUID();
+    const at = new Date().toISOString();
+    const outageStarted = (this.health.outageStartedAt() ?? new Date()).toISOString();
+
+    // No local hold movement: a credit operation is symmetric to an absent
+    // debit. HCM still reflects the original debit; the reconciler's
+    // `applyHcmUpdate` will surface the credit when `releaseBalance` succeeds.
+    // (TRD §9.5.4: "Cancellation is a credit operation; the risk of being
+    // wrong is bounded ... at worst, we credit and HCM hasn't actually
+    // debited yet, which converges naturally.")
+    this.db.transaction(() => {
+      this.provisionalActions.insert({
+        id: provisionalActionId,
+        type: 'PROVISIONAL_CANCELLATION',
+        requestId,
+        invokedBy: ctx.actorId,
+        invokedAt: at,
+        reason: 'user-initiated; acknowledgedHcmUnavailable=true',
+        outageStartObservedAt: outageStarted,
+        localStateSnapshot: snapshot,
+      });
+      this.store.markCancellationPending({ id: requestId, at });
       this.idempotency.remember(idempotencyKey, inputHash, { requestId });
     })();
 
@@ -599,6 +655,45 @@ export class RequestService {
     const row = this.store.find(id);
     if (row === null) throw new Error(`internal: request ${id} disappeared mid-saga`);
     return row;
+  }
+
+  /**
+   * Captures the request, its current balance, and the covering employment
+   * period at the moment of a provisional decision (TRD §5.6.1). The reconciler
+   * nullifies this on CONFIRMED/NO_OP outcomes but retains the full snapshot
+   * on REJECTED_ESCALATED so HR can investigate.
+   */
+  private buildOutageSnapshot(
+    request: TimeOffRequestRow,
+    operation: string,
+  ): Readonly<Record<string, unknown>> {
+    const balanceRow = this.balance.get(
+      request.employeeId,
+      request.locationId,
+      request.leaveTypeId,
+    );
+    if (balanceRow === null) {
+      throw new Error(`BalanceService: no balance exists for ${operation} of ${request.id}`);
+    }
+    const period =
+      this.employment
+        .history(request.employeeId)
+        .find(
+          (p) =>
+            p.effectiveFrom <= request.startDate &&
+            (p.effectiveTo === null || p.effectiveTo >= request.endDate),
+        ) ?? null;
+    return {
+      balance: serializeBalanceRow(balanceRow),
+      request: serializeRequestRow(request),
+      employmentPeriod: period
+        ? {
+            locationId: period.locationId,
+            effectiveFrom: period.effectiveFrom,
+            effectiveTo: period.effectiveTo,
+          }
+        : null,
+    };
   }
 }
 

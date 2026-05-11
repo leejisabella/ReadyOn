@@ -203,10 +203,17 @@ export class ProvisionalReconciler {
             workerId: this.workerId,
           });
         }
-        // Coalesced cancellation: the request never debited HCM, so just
-        // release the provisional hold and mark CANCELLED.
+        // Coalesced pair: the request never actually debited HCM, so release
+        // the provisional hold and terminate at CANCELLED. After
+        // `cancelProvisionally` the state is `CANCELLATION_PENDING`; if the
+        // user never called it the state is still `PROVISIONALLY_APPROVED` —
+        // both transition to CANCELLED.
         const request = this.requests.find(approval.requestId);
-        if (request && request.state === 'PROVISIONALLY_APPROVED') {
+        if (
+          request &&
+          (request.state === 'PROVISIONALLY_APPROVED' ||
+            request.state === 'CANCELLATION_PENDING')
+        ) {
           this.balance.releaseHold(
             request.employeeId,
             request.locationId,
@@ -398,7 +405,9 @@ export class ProvisionalReconciler {
         occurredAt: now,
         workerId: this.workerId,
       });
-      // Release the provisional hold and credit/debit the local balance.
+      // Update the local balance from HCM's authoritative view. The
+      // provisional hold is released only for BREAK_GLASS_APPROVAL — the
+      // cancellation saga doesn't move holds, so there's nothing to release.
       this.balance.applyHcmUpdate({
         employeeId: request.employeeId,
         locationId: request.locationId,
@@ -407,13 +416,15 @@ export class ProvisionalReconciler {
         hcmVersion: response.hcmVersion,
         hcmEffectiveAt: response.appliedAt,
       });
-      this.balance.releaseHold(
-        request.employeeId,
-        request.locationId,
-        request.leaveTypeId,
-        request.units,
-        'provisional',
-      );
+      if (action.type === 'BREAK_GLASS_APPROVAL') {
+        this.balance.releaseHold(
+          request.employeeId,
+          request.locationId,
+          request.leaveTypeId,
+          request.units,
+          'provisional',
+        );
+      }
       // Request transitions: APPROVED unless its endDate has passed (TRD §9.5.5).
       if (action.type === 'BREAK_GLASS_APPROVAL') {
         if (this.endDatePassed(request.endDate)) {
@@ -522,15 +533,20 @@ export class ProvisionalReconciler {
     const at = new Date(this.now()).toISOString();
     this.db.transaction(() => {
       this.requests.markEscalatedToHr({ id: requestId, reason: details.reason, at });
-      const request = this.requests.find(requestId);
-      if (request) {
-        this.balance.releaseHold(
-          request.employeeId,
-          request.locationId,
-          request.leaveTypeId,
-          request.units,
-          'provisional',
-        );
+      // Only BREAK_GLASS_APPROVAL puts units in the provisional bucket. A
+      // cancellation escalation leaves the original HCM debit in place;
+      // nothing to release locally.
+      if (action.type === 'BREAK_GLASS_APPROVAL') {
+        const request = this.requests.find(requestId);
+        if (request) {
+          this.balance.releaseHold(
+            request.employeeId,
+            request.locationId,
+            request.leaveTypeId,
+            request.units,
+            'provisional',
+          );
+        }
       }
       this.markActionReconciled(action.id, 'REJECTED_ESCALATED', details);
     })();

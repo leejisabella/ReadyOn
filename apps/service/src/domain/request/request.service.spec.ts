@@ -583,6 +583,196 @@ describe('RequestService.approveProvisionally (break-glass)', () => {
   });
 });
 
+// ── cancelProvisionally (TRD §9.5.4 — provisional cancellation) ───────────
+
+describe('RequestService.cancelProvisionally (provisional cancellation)', () => {
+  let ctx: Ctx;
+
+  beforeAll(async () => {
+    ctx = await buildContext();
+  });
+
+  afterAll(async () => {
+    await ctx.cleanup();
+  });
+
+  beforeEach(async () => {
+    ctx.health.resetForTest();
+    ctx.resetServiceDb();
+    await ctx.harness.reset();
+    await ctx.harness.seedEmployee({
+      employeeId: 'emp-1',
+      employment: [{ locationId: 'loc-1', effectiveFrom: '2025-01-01' }],
+      balances: [{ locationId: 'loc-1', leaveTypeId: 'pto', available: '10' }],
+    });
+    await ctx.harness.seedLeaveTypeAvailability({
+      locationId: 'loc-1',
+      leaveTypeId: 'pto',
+      isActive: true,
+      effectiveFrom: '2025-01-01',
+    });
+    await ctx.bootstrap.handleEmployeeCreatedEvent({
+      employeeId: 'emp-1',
+      hcmVersion: 1n,
+      initialEmployment: { locationId: 'loc-1', effectiveFrom: '2025-01-01' },
+    });
+    ctx.leaveTypes.applyHcmUpdate({
+      locationId: 'loc-1',
+      leaveTypeId: 'pto',
+      effectiveFrom: '2025-01-01',
+      effectiveTo: null,
+      isActive: true,
+      hcmVersion: 1n,
+    });
+  });
+
+  /** Walk the saga to an APPROVED request (HCM-confirmed). */
+  async function approvedRequest(): Promise<string> {
+    const r = await ctx.request.create(createInput(), actor('emp-1'), 'idem-c-create');
+    await ctx.request.approve(r.id, actor('mgr-1', 'manager'), 'idem-c-approve');
+    return r.id;
+  }
+
+  it('APPROVED → CANCELLATION_PENDING: records PROVISIONAL_CANCELLATION without moving holds (HCM still has the debit)', async () => {
+    const id = await approvedRequest();
+    const before = ctx.balance.get('emp-1', 'loc-1', 'pto')!;
+    // After a normal `approve`, HCM debited; available reflects that. No
+    // local hold bucket carries the approved units.
+    expect(before.holds.pending.toFixed()).toBe('0');
+    expect(before.holds.approved.toFixed()).toBe('0');
+    expect(before.holds.provisional.toFixed()).toBe('0');
+    expect(before.available.toFixed()).toBe('7');
+
+    const result = await ctx.request.cancelProvisionally(
+      id,
+      actor('emp-1'),
+      'idem-cp-1',
+      { acknowledgedHcmUnavailable: true },
+    );
+
+    expect(result.state).toBe('CANCELLATION_PENDING');
+
+    const after = ctx.balance.get('emp-1', 'loc-1', 'pto')!;
+    // No hold movement — the reconciler's applyHcmUpdate surfaces the
+    // credit when releaseBalance succeeds (TRD §9.5.4).
+    expect(after.holds.pending.toFixed()).toBe('0');
+    expect(after.holds.approved.toFixed()).toBe('0');
+    expect(after.holds.provisional.toFixed()).toBe('0');
+    expect(after.available.toFixed()).toBe('7');
+
+    const actions = ctx.provisionalActions.findByRequestId(id);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      type: 'PROVISIONAL_CANCELLATION',
+      invokedBy: 'emp-1',
+      reason: 'user-initiated; acknowledgedHcmUnavailable=true',
+      reconciliationState: 'PENDING',
+    });
+  });
+
+  it('PROVISIONALLY_APPROVED → CANCELLATION_PENDING: preserves the existing provisional hold from the break-glass approval', async () => {
+    // The shared ctx has unhealthyAfterFailures=100, so we simulate the
+    // break-glass post-state directly: state=PROVISIONALLY_APPROVED, units
+    // promoted pending → provisional.
+    const r = await ctx.request.create(createInput(), actor('emp-1'), 'idem-pa-create');
+    ctx.db.transaction(() => {
+      ctx.db
+        .prepare(
+          `UPDATE time_off_request SET state = 'PROVISIONALLY_APPROVED', provisional_approval_id = ?, approved_by = ?, updated_at = ? WHERE id = ?`,
+        )
+        .run('pa-seed', 'mgr-1', new Date().toISOString(), r.id);
+      ctx.balance.promoteHold('emp-1', 'loc-1', 'pto', new Decimal('3'), 'pending', 'provisional');
+    })();
+
+    const result = await ctx.request.cancelProvisionally(
+      r.id,
+      actor('emp-1'),
+      'idem-cp-pa',
+      { acknowledgedHcmUnavailable: true },
+    );
+
+    expect(result.state).toBe('CANCELLATION_PENDING');
+    const after = ctx.balance.get('emp-1', 'loc-1', 'pto')!;
+    expect(after.holds.provisional.toFixed()).toBe('3');
+    expect(after.holds.approved.toFixed()).toBe('0');
+    expect(after.holds.pending.toFixed()).toBe('0');
+  });
+
+  it('throws CANCEL_DURING_OUTAGE_REQUIRES_ACKNOWLEDGMENT when ack is false', async () => {
+    const id = await approvedRequest();
+    await expect(
+      ctx.request.cancelProvisionally(id, actor('emp-1'), 'idem-cp-noack', {
+        acknowledgedHcmUnavailable: false,
+      }),
+    ).rejects.toMatchObject({ code: 'CANCEL_DURING_OUTAGE_REQUIRES_ACKNOWLEDGMENT' });
+  });
+
+  it('throws REQUEST_NOT_FOUND for an unknown id', async () => {
+    await expect(
+      ctx.request.cancelProvisionally(
+        '00000000-0000-0000-0000-000000000000',
+        actor('emp-1'),
+        'idem-cp-404',
+        { acknowledgedHcmUnavailable: true },
+      ),
+    ).rejects.toMatchObject({ code: 'REQUEST_NOT_FOUND' });
+  });
+
+  it('throws TERMINAL_STATE_REACHED on a CANCELLED request', async () => {
+    const r = await ctx.request.create(createInput(), actor('emp-1'), 'idem-cp-term-create');
+    await ctx.request.cancel(r.id, actor('emp-1'), 'idem-cp-term-cancel');
+    await expect(
+      ctx.request.cancelProvisionally(r.id, actor('emp-1'), 'idem-cp-term', {
+        acknowledgedHcmUnavailable: true,
+      }),
+    ).rejects.toMatchObject({ code: 'TERMINAL_STATE_REACHED' });
+  });
+
+  it('throws STATE_TRANSITION_NOT_ALLOWED for a PENDING_APPROVAL request (use cancel instead)', async () => {
+    const r = await ctx.request.create(createInput(), actor('emp-1'), 'idem-cp-pending-create');
+    await expect(
+      ctx.request.cancelProvisionally(r.id, actor('emp-1'), 'idem-cp-pending', {
+        acknowledgedHcmUnavailable: true,
+      }),
+    ).rejects.toMatchObject({ code: 'STATE_TRANSITION_NOT_ALLOWED' });
+  });
+
+  it('replays the cached result on idempotent retry — action inserted exactly once', async () => {
+    const id = await approvedRequest();
+    const first = await ctx.request.cancelProvisionally(
+      id,
+      actor('emp-1'),
+      'idem-cp-replay',
+      { acknowledgedHcmUnavailable: true },
+    );
+    const second = await ctx.request.cancelProvisionally(
+      id,
+      actor('emp-1'),
+      'idem-cp-replay',
+      { acknowledgedHcmUnavailable: true },
+    );
+    expect(second.id).toBe(first.id);
+    expect(second.state).toBe('CANCELLATION_PENDING');
+    expect(ctx.provisionalActions.findByRequestId(id)).toHaveLength(1);
+  });
+
+  it('idempotency key collision with `cancel` is avoided: same key + same actor produces a distinct hash', async () => {
+    const r1 = await approvedRequest();
+    // First: cancelProvisionally with key X
+    await ctx.request.cancelProvisionally(r1, actor('emp-1'), 'shared-key', {
+      acknowledgedHcmUnavailable: true,
+    });
+    // Second: regular cancel with the same key — must NOT replay the
+    // provisional result; instead it should raise the input-mismatch error
+    // (different hash → cache conflict).
+    const r2 = await ctx.request.create(createInput(), actor('emp-1'), 'idem-cp-second-create');
+    await ctx.request.approve(r2.id, actor('mgr-1', 'manager'), 'idem-cp-second-approve');
+    await expect(
+      ctx.request.cancel(r2.id, actor('emp-1'), 'shared-key'),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_INPUT' });
+  });
+});
+
 // Surface DomainError shapes nicely in Jest assertions: tests rely on
 // `code` being readable, which DomainError exposes directly.
 expect.extend({

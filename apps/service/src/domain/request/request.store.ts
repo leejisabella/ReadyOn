@@ -133,6 +133,7 @@ export class RequestStore {
   private readonly markApprovedFromProvisionalStmt: Statement;
   private readonly markEscalatedToHrStmt: Statement;
   private readonly markTakenStmt: Statement;
+  private readonly markCancellationPendingStmt: Statement;
 
   constructor(@Inject(DATABASE) db: Database) {
     this.findStmt = db.prepare(
@@ -205,6 +206,12 @@ export class RequestStore {
               hr_review_flag   = :hrReviewFlag,
               hr_review_reason = :hrReviewReason,
               updated_at       = :at
+        WHERE id = :id`,
+    );
+    this.markCancellationPendingStmt = db.prepare(
+      `UPDATE time_off_request
+          SET state      = 'CANCELLATION_PENDING',
+              updated_at = :at
         WHERE id = :id`,
     );
   }
@@ -302,5 +309,14 @@ export class RequestStore {
       hrReviewReason: args.hrReviewReason,
       at: args.at,
     });
+  }
+
+  /**
+   * Transition `APPROVED` or `PROVISIONALLY_APPROVED` → `CANCELLATION_PENDING`.
+   * The terminal `CANCELLED` transition is driven by the reconciler once HCM
+   * confirms the credit (TRD §9.5.4).
+   */
+  markCancellationPending(args: { readonly id: string; readonly at: string }): void {
+    this.markCancellationPendingStmt.run(args);
   }
 }

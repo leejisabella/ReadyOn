@@ -1,0 +1,15 @@
+{
+  "name": "@time-off/domain-types",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared domain types: DTOs, enums, ErrorCode, RequestState. No runtime behavior, no Nest dependencies.",
+  "license": "UNLICENSED",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "decimal.js": "^10.4.3"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@time-off/mock-hcm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mock HCM partner for the Time-Off service. Separate process, own SQLite store, configurable adversarial modes.",
+  "license": "UNLICENSED",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/main.js",
+    "start:dev": "ts-node -r tsconfig-paths/register src/main.ts",
+    "test": "jest --config ../../jest.config.ts"
+  },
+  "dependencies": {
+    "@time-off/domain-types": "*",
+    "@time-off/hcm-port": "*",
+    "@nestjs/common": "^10.3.7",
+    "@nestjs/core": "^10.3.7",
+    "@nestjs/platform-express": "^10.3.7",
+    "decimal.js": "^10.4.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "^10.3.7"
+  }
+}

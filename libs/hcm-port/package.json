@@ -1,0 +1,17 @@
+{
+  "name": "@time-off/hcm-port",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HcmPort interface and zod schemas. Shared between the service (adapters) and the Mock HCM (test partner). Includes queryTransactions (TRD §13.2.1, Rev 3 exactly-once) and EMPLOYEE_NOT_FOUND (Rev 3.1 Q.ν).",
+  "license": "UNLICENSED",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@time-off/domain-types": "*",
+    "decimal.js": "^10.4.3",
+    "zod": "^3.22.4"
+  }
+}

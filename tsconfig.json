@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [],
+  "references": [
+    { "path": "./libs/domain-types" },
+    { "path": "./libs/hcm-port" },
+    { "path": "./libs/decimal-scalar" },
+    { "path": "./apps/service" },
+    { "path": "./apps/mock-hcm" }
+  ]
+}

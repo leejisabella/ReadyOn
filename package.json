@@ -1,0 +1,36 @@
+{
+  "name": "time-off-microservice",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ReadyOn Time-Off Microservice. NestJS + SQLite. Manages the time-off request lifecycle on top of a Human Capital Management (HCM) system that remains canonical for balance data.",
+  "license": "UNLICENSED",
+  "workspaces": [
+    "libs/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean && rimraf '**/dist' '**/*.tsbuildinfo'",
+    "typecheck": "tsc -b",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "start:service": "npm --workspace @time-off/service run start:dev",
+    "start:mock-hcm": "npm --workspace @time-off/mock-hcm run start:dev",
+    "start:all": "node scripts/start-all.js"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.30",
+    "jest": "^29.7.0",
+    "rimraf": "^5.0.5",
+    "ts-jest": "^29.1.2",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.3.3"
+  }
+}

@@ -10,6 +10,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "decimal.js": "^10.4.3"
+    "decimal.js": "^10.4.3",
+    "graphql": "^16.8.1"
   }
 }

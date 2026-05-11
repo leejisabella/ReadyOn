@@ -10,6 +10,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
+    "@time-off/decimal-scalar": "*",
     "@time-off/domain-types": "*",
     "decimal.js": "^10.4.3",
     "zod": "^3.22.4"

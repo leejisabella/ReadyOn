@@ -17,6 +17,8 @@ import { RequestService } from '../../domain/request/request.service';
 import { RequestStore } from '../../domain/request/request.store';
 import { HcmAdapterModule } from '../hcm/hcm-adapter.module';
 import { HcmHealthMonitor } from '../hcm/hcm-health.monitor';
+import { AuditEventStore } from '../observability/audit-event.store';
+import { ObservabilityModule } from '../observability/observability.module';
 import { DatabaseModule } from '../persistence/database.module';
 import { DATABASE } from '../persistence/database.token';
 import { ProvisionalReconciler } from './provisional-reconciler.service';
@@ -36,6 +38,7 @@ interface Ctx {
   readonly bootstrap: EmployeeBootstrapService;
   readonly leaveTypes: LeaveTypeAvailabilityService;
   readonly health: HcmHealthMonitor;
+  readonly audit: AuditEventStore;
   resetServiceDb(): void;
   cleanup(): Promise<void>;
 }
@@ -52,6 +55,7 @@ async function buildContext(): Promise<Ctx> {
   const moduleRef = await Test.createTestingModule({
     imports: [
       DatabaseModule.forRoot({ dbPath: ':memory:' }),
+      ObservabilityModule.forRoot(),
       HcmAdapterModule.forRoot({
         adapter: { baseUrl: harness.baseUrl, timeoutMs: 2000 },
         healthMonitor: { unhealthyAfterFailures: 1, healthyAfterMs: 1_000_000, now },
@@ -89,9 +93,11 @@ async function buildContext(): Promise<Ctx> {
     bootstrap: app.get(EmployeeBootstrapService),
     leaveTypes: app.get(LeaveTypeAvailabilityService),
     health: app.get(HcmHealthMonitor),
+    audit: app.get(AuditEventStore),
     resetServiceDb(): void {
       db.exec(
-        `DELETE FROM reconciliation_step;
+        `DELETE FROM audit_event;
+         DELETE FROM reconciliation_step;
          UPDATE reconciler_lease SET held_by = NULL, acquired_at = NULL, expires_at = NULL;
          DELETE FROM idempotency_key;
          DELETE FROM provisional_action;
@@ -572,6 +578,62 @@ describe('ProvisionalReconciler', () => {
 
       // Sanity: provisional cancellation step log shows PAIR_COALESCED.
       expect(ctx.steps.findLast(provisional.provisionalApprovalId!)?.kind).toBe('PAIR_COALESCED');
+    });
+  });
+
+  // ── audit-event emission (TRD §18) ────────────────────────────────────
+
+  describe('audit-event emission', () => {
+    it('emits PROVISIONAL_APPROVAL_CONFIRMED + PASS_COMPLETED on a successful tick', async () => {
+      const { provisionalActionId } = await seedScenario(ctx);
+      await ctx.reconciler.tick();
+
+      const onAction = ctx.audit.findByEntity('ProvisionalAction', provisionalActionId);
+      expect(onAction.map((e) => e.action)).toEqual(['PROVISIONAL_APPROVAL_CONFIRMED']);
+      expect(onAction[0]?.severity).toBe('MEDIUM');
+
+      const onReconciler = ctx.audit.findByEntity('Reconciler', 'test-worker');
+      expect(onReconciler.map((e) => e.action)).toEqual([
+        'PROVISIONAL_RECONCILIATION_PASS_COMPLETED',
+      ]);
+      expect(onReconciler[0]?.after).toMatchObject({ inspected: 1, confirmed: 1 });
+    });
+
+    it('emits PROVISIONAL_APPROVAL_ESCALATED (HIGH severity) when HCM rejects', async () => {
+      const { provisionalActionId } = await seedScenario(ctx);
+      await ctx.harness.seedBalance({
+        employeeId: 'emp-1',
+        locationId: 'loc-1',
+        leaveTypeId: 'pto',
+        available: '1',
+      });
+      await ctx.reconciler.tick();
+
+      const events = ctx.audit.findByEntity('ProvisionalAction', provisionalActionId);
+      expect(events.map((e) => e.action)).toEqual(['PROVISIONAL_APPROVAL_ESCALATED']);
+      expect(events[0]?.severity).toBe('HIGH');
+    });
+
+    it('emits PROVISIONAL_PAIR_COALESCED on pair detection', async () => {
+      const { requestId, provisionalActionId } = await seedScenario(ctx);
+      ctx.actions.insert({
+        id: 'pa-cancel-audit',
+        type: 'PROVISIONAL_CANCELLATION',
+        requestId,
+        invokedBy: 'emp-1',
+        invokedAt: new Date(now() + 30_000).toISOString(),
+        reason: 'user cancelled during outage',
+        outageStartObservedAt: new Date(now()).toISOString(),
+        localStateSnapshot: {},
+      });
+      await ctx.reconciler.tick();
+      const events = ctx.audit.findByEntity('ProvisionalAction', provisionalActionId);
+      expect(events.map((e) => e.action)).toEqual(['PROVISIONAL_PAIR_COALESCED']);
+      expect(events[0]?.after).toMatchObject({
+        approvalId: provisionalActionId,
+        cancellationId: 'pa-cancel-audit',
+        finalState: 'CANCELLED',
+      });
     });
   });
 });

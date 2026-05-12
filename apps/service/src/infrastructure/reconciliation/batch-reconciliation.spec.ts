@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import { MockHcmTestHarness } from '../../../test/helpers/mock-hcm-test-harness';
 import { BalanceService } from '../../domain/balance/balance.service';
 import { HcmAdapterModule } from '../hcm/hcm-adapter.module';
+import { ObservabilityModule } from '../observability/observability.module';
 import { DatabaseModule } from '../persistence/database.module';
 import { BatchReconciliation } from './batch-reconciliation.service';
 import { ReconciliationModule } from './reconciliation.module';
@@ -20,6 +21,7 @@ async function buildContext(): Promise<Ctx> {
   const moduleRef = await Test.createTestingModule({
     imports: [
       DatabaseModule.forRoot({ dbPath: ':memory:' }),
+      ObservabilityModule.forRoot(),
       HcmAdapterModule.forRoot({
         adapter: { baseUrl: harness.baseUrl, timeoutMs: 2000 },
       }),

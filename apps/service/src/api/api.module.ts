@@ -12,6 +12,7 @@ import {
   type RequestModuleOptions,
 } from '../domain/request/request.module';
 import { RequestStore } from '../domain/request/request.store';
+import { ObservabilityModule } from '../infrastructure/observability/observability.module';
 import { ReconciliationModule } from '../infrastructure/reconciliation/reconciliation.module';
 import { DomainErrorFilter } from './errors/domain-error.filter';
 import { AdminResolver } from './resolvers/admin.resolver';
@@ -45,6 +46,7 @@ export class ApiModule {
     return {
       module: ApiModule,
       imports: [
+        ObservabilityModule.forRoot(),
         BalanceModule,
         EmploymentModule,
         LeaveTypeAvailabilityModule,

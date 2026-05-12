@@ -17,6 +17,7 @@ import {
 import Decimal from 'decimal.js';
 import { HCM_PORT } from '../../infrastructure/hcm/hcm-adapter.module';
 import { HcmHealthMonitor } from '../../infrastructure/hcm/hcm-health.monitor';
+import { AuditEventService } from '../../infrastructure/observability/audit-event.service';
 import { DATABASE } from '../../infrastructure/persistence/database.token';
 import { BalanceService } from '../balance/balance.service';
 import {
@@ -126,6 +127,7 @@ export class RequestService {
     private readonly breakGlass: BreakGlassAuthorizer,
     private readonly provisionalActions: ProvisionalActionStore,
     private readonly health: HcmHealthMonitor,
+    private readonly audit: AuditEventService,
     @Inject(HCM_PORT) private readonly hcm: HcmPort,
     @Inject(DATABASE) private readonly db: Database,
   ) {}
@@ -134,7 +136,7 @@ export class RequestService {
 
   async create(
     input: CreateTimeOffRequestInput,
-    _ctx: ActorContext,
+    ctx: ActorContext,
     idempotencyKey: string,
   ): Promise<TimeOffRequestRow> {
     const units = this.parseAndValidateInput(input);
@@ -184,6 +186,20 @@ export class RequestService {
       this.idempotency.remember(idempotencyKey, inputHash, { requestId: id });
     })();
 
+    this.audit.emit({
+      action: 'REQUEST_CREATED',
+      entityType: 'TimeOffRequest',
+      entityId: id,
+      actor: ctx.actorId,
+      correlationId: ctx.correlationId,
+      after: {
+        state: 'PENDING_APPROVAL',
+        employeeId: input.employeeId,
+        locationId: startLocation,
+        leaveTypeId: input.leaveTypeId,
+        units: units.toFixed(),
+      },
+    });
     return this.mustFind(id);
   }
 
@@ -275,6 +291,15 @@ export class RequestService {
       this.idempotency.remember(idempotencyKey, inputHash, { requestId });
     })();
 
+    this.audit.emit({
+      action: 'REQUEST_APPROVED',
+      entityType: 'TimeOffRequest',
+      entityId: requestId,
+      actor: ctx.actorId,
+      correlationId: ctx.correlationId,
+      before: { state: request.state },
+      after: { state: 'APPROVED', hcmTransactionId: hcmResponse.transactionId },
+    });
     return this.mustFind(requestId);
   }
 
@@ -373,6 +398,20 @@ export class RequestService {
       this.idempotency.remember(idempotencyKey, inputHash, { requestId });
     })();
 
+    this.audit.emit({
+      action: 'BREAK_GLASS_APPROVAL_INVOKED',
+      entityType: 'TimeOffRequest',
+      entityId: requestId,
+      actor: ctx.actorId,
+      correlationId: ctx.correlationId,
+      before: { state: request.state },
+      after: {
+        state: 'PROVISIONALLY_APPROVED',
+        provisionalActionId,
+        justification: trimmedJustification,
+        outageStartObservedAt: outageStarted,
+      },
+    });
     return this.mustFind(requestId);
   }
 
@@ -447,6 +486,20 @@ export class RequestService {
       this.idempotency.remember(idempotencyKey, inputHash, { requestId });
     })();
 
+    this.audit.emit({
+      action: 'PROVISIONAL_CANCELLATION_INVOKED',
+      entityType: 'TimeOffRequest',
+      entityId: requestId,
+      actor: ctx.actorId,
+      correlationId: ctx.correlationId,
+      before: { state: request.state },
+      after: {
+        state: 'CANCELLATION_PENDING',
+        provisionalActionId,
+        acknowledgedHcmUnavailable: true,
+        outageStartObservedAt: outageStarted,
+      },
+    });
     return this.mustFind(requestId);
   }
 
@@ -487,6 +540,15 @@ export class RequestService {
       this.idempotency.remember(idempotencyKey, inputHash, { requestId });
     })();
 
+    this.audit.emit({
+      action: 'REQUEST_REJECTED',
+      entityType: 'TimeOffRequest',
+      entityId: requestId,
+      actor: ctx.actorId,
+      correlationId: ctx.correlationId,
+      before: { state: request.state },
+      after: { state: 'REJECTED', reason },
+    });
     return this.mustFind(requestId);
   }
 
@@ -526,6 +588,15 @@ export class RequestService {
         this.store.markCancelled({ id: requestId, at });
         this.idempotency.remember(idempotencyKey, inputHash, { requestId });
       })();
+      this.audit.emit({
+        action: 'REQUEST_CANCELLED',
+        entityType: 'TimeOffRequest',
+        entityId: requestId,
+        actor: ctx.actorId,
+        correlationId: ctx.correlationId,
+        before: { state: 'PENDING_APPROVAL' },
+        after: { state: 'CANCELLED' },
+      });
       return this.mustFind(requestId);
     }
 
@@ -562,6 +633,15 @@ export class RequestService {
       this.idempotency.remember(idempotencyKey, inputHash, { requestId });
     })();
 
+    this.audit.emit({
+      action: 'REQUEST_CANCELLED',
+      entityType: 'TimeOffRequest',
+      entityId: requestId,
+      actor: ctx.actorId,
+      correlationId: ctx.correlationId,
+      before: { state: 'APPROVED' },
+      after: { state: 'CANCELLED', hcmTransactionId: hcmResponse.transactionId },
+    });
     return this.mustFind(requestId);
   }
 

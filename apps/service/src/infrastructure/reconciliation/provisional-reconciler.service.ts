@@ -19,6 +19,8 @@ import {
 } from '../../domain/provisional-action/provisional-action.store';
 import { RequestStore } from '../../domain/request/request.store';
 import { HCM_PORT } from '../hcm/hcm-adapter.module';
+import { AuditEventService } from '../observability/audit-event.service';
+import { METRICS, type Metrics } from '../observability/metrics';
 import { DATABASE } from '../persistence/database.token';
 import {
   ReconciliationStepStore,
@@ -88,6 +90,8 @@ export class ProvisionalReconciler {
     private readonly steps: ReconciliationStepStore,
     private readonly requests: RequestStore,
     private readonly balance: BalanceService,
+    private readonly audit: AuditEventService,
+    @Inject(METRICS) private readonly metrics: Metrics,
     @Inject(HCM_PORT) private readonly hcm: HcmPort,
     @Inject(DATABASE) private readonly db: Database,
     @Inject('PROVISIONAL_RECONCILER_OPTIONS')
@@ -152,7 +156,7 @@ export class ProvisionalReconciler {
             break;
         }
       }
-      return {
+      const summary = {
         inspected: pending.length,
         confirmed,
         escalated,
@@ -161,6 +165,20 @@ export class ProvisionalReconciler {
         staleAlertsEmitted,
         skippedLeaseHeld: false,
       };
+      if (summary.inspected > 0) {
+        this.audit.emit({
+          action: 'PROVISIONAL_RECONCILIATION_PASS_COMPLETED',
+          entityType: 'Reconciler',
+          entityId: this.workerId,
+          actor: this.workerId,
+          after: summary,
+        });
+      }
+      this.metrics.counter('reconciler.provisional_tick_completed', 1, {
+        confirmed: String(confirmed),
+        escalated: String(escalated),
+      });
+      return summary;
     } finally {
       this.lease.release('provisional', this.workerId);
     }
@@ -230,6 +248,19 @@ export class ProvisionalReconciler {
 
       coalesced.add(approval.id);
       coalesced.add(cancellation.id);
+
+      this.audit.emit({
+        action: 'PROVISIONAL_PAIR_COALESCED',
+        entityType: 'ProvisionalAction',
+        entityId: approval.id,
+        actor: this.workerId,
+        after: {
+          requestId: approval.requestId,
+          approvalId: approval.id,
+          cancellationId: cancellation.id,
+          finalState: 'CANCELLED',
+        },
+      });
     }
     return coalesced;
   }
@@ -450,6 +481,20 @@ export class ProvisionalReconciler {
         deltaApplied: response.deltaApplied.toFixed(),
       });
     })();
+    this.audit.emit({
+      action:
+        action.type === 'BREAK_GLASS_APPROVAL'
+          ? 'PROVISIONAL_APPROVAL_CONFIRMED'
+          : 'PROVISIONAL_CANCELLATION_CONFIRMED',
+      entityType: 'ProvisionalAction',
+      entityId: action.id,
+      actor: this.workerId,
+      after: {
+        requestId: request.id,
+        hcmTransactionId: response.transactionId,
+        deltaApplied: response.deltaApplied.toFixed(),
+      },
+    });
   }
 
   private handleHcmRejection(
@@ -491,6 +536,18 @@ export class ProvisionalReconciler {
           leaveAlreadyTaken: true,
         });
       })();
+      this.audit.emit({
+        action: 'PROVISIONAL_APPROVAL_ESCALATED',
+        entityType: 'ProvisionalAction',
+        entityId: action.id,
+        actor: this.workerId,
+        after: {
+          requestId: request.id,
+          reason,
+          finalState: 'TAKEN',
+          hrReviewFlag: true,
+        },
+      });
       return 'REJECTED_ESCALATED';
     }
     this.applyEscalation(action, request.id, { reason, kind: 'HCM_REJECTED' });
@@ -522,6 +579,18 @@ export class ProvisionalReconciler {
         phase,
       });
     })();
+    this.audit.emit({
+      action: 'PROVISIONAL_APPROVAL_ESCALATED',
+      entityType: 'ProvisionalAction',
+      entityId: action.id,
+      actor: this.workerId,
+      after: {
+        requestId,
+        kind: 'EMPLOYEE_DELETED',
+        reason: 'Employee no longer exists in HCM',
+        phase,
+      },
+    });
     return 'REJECTED_ESCALATED';
   }
 
@@ -550,6 +619,13 @@ export class ProvisionalReconciler {
       }
       this.markActionReconciled(action.id, 'REJECTED_ESCALATED', details);
     })();
+    this.audit.emit({
+      action: 'PROVISIONAL_APPROVAL_ESCALATED',
+      entityType: 'ProvisionalAction',
+      entityId: action.id,
+      actor: this.workerId,
+      after: { requestId, ...details },
+    });
   }
 
   // ── Stale alerts (TRD §9.5.6) ────────────────────────────────────────────
@@ -557,17 +633,33 @@ export class ProvisionalReconciler {
   private emitStaleAlerts(actions: readonly ProvisionalActionRow[]): number {
     const cutoff = this.now() - this.staleAfterMs;
     let emitted = 0;
+    let stillStale = 0;
     for (const action of actions) {
       const ageMs = this.now() - new Date(action.invokedAt).getTime();
       if (ageMs < this.staleAfterMs) continue;
+      stillStale += 1;
       const lastAlerted = action.lastStaleAlertAt
         ? new Date(action.lastStaleAlertAt).getTime()
         : null;
       // dedup: only emit if no prior alert within this tick window
       if (lastAlerted !== null && lastAlerted > cutoff) continue;
       this.actions.recordStaleAlert(action.id, new Date(this.now()).toISOString());
+      this.audit.emit({
+        action: 'PROVISIONAL_ACTION_STALE',
+        entityType: 'ProvisionalAction',
+        entityId: action.id,
+        actor: this.workerId,
+        after: {
+          requestId: action.requestId,
+          ageMs,
+          bucket: staleAgeBucket(ageMs),
+        },
+      });
       emitted += 1;
     }
+    // Gauge reflects the *current* stale count, not a delta — drains naturally
+    // when the reconciler clears actions (TRD §9.5.6).
+    this.metrics.gauge('reconciler.provisional_action_stale_count', stillStale);
     return emitted;
   }
 
@@ -626,4 +718,14 @@ export class ProvisionalReconciler {
     const endMidnight = new Date(`${endDateIso}T23:59:59.999Z`).getTime();
     return this.now() > endMidnight;
   }
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/** Bucket label used as a metric tag for the stale-action gauge (TRD §9.5.6). */
+function staleAgeBucket(ageMs: number): string {
+  if (ageMs < HOUR_MS) return '<1h';
+  if (ageMs < 4 * HOUR_MS) return '1-4h';
+  if (ageMs < 12 * HOUR_MS) return '4-12h';
+  return '>12h';
 }

@@ -5,6 +5,8 @@ import type { Database } from 'better-sqlite3';
 import Decimal from 'decimal.js';
 import { HcmAdapterModule } from '../../infrastructure/hcm/hcm-adapter.module';
 import { HcmHealthMonitor, type HcmHealthMonitorOptions } from '../../infrastructure/hcm/hcm-health.monitor';
+import { AuditEventStore } from '../../infrastructure/observability/audit-event.store';
+import { ObservabilityModule } from '../../infrastructure/observability/observability.module';
 import { DATABASE } from '../../infrastructure/persistence/database.token';
 import { DatabaseModule } from '../../infrastructure/persistence/database.module';
 import { MockHcmTestHarness } from '../../../test/helpers/mock-hcm-test-harness';
@@ -33,6 +35,7 @@ interface Ctx {
   readonly bootstrap: EmployeeBootstrapService;
   readonly health: HcmHealthMonitor;
   readonly provisionalActions: ProvisionalActionStore;
+  readonly audit: AuditEventStore;
   resetServiceDb(): void;
   cleanup(): Promise<void>;
 }
@@ -45,6 +48,7 @@ async function buildContext(opts: {
   const moduleRef = await Test.createTestingModule({
     imports: [
       DatabaseModule.forRoot({ dbPath: ':memory:' }),
+      ObservabilityModule.forRoot(),
       HcmAdapterModule.forRoot({
         adapter: { baseUrl: harness.baseUrl, timeoutMs: 2000 },
         // Default keeps the gate dormant for the normal-path suite; the
@@ -75,9 +79,11 @@ async function buildContext(opts: {
     bootstrap: app.get(EmployeeBootstrapService),
     health: app.get(HcmHealthMonitor),
     provisionalActions: app.get(ProvisionalActionStore),
+    audit: app.get(AuditEventStore),
     resetServiceDb(): void {
       db.exec(
-        `DELETE FROM idempotency_key;
+        `DELETE FROM audit_event;
+         DELETE FROM idempotency_key;
          DELETE FROM provisional_action;
          DELETE FROM time_off_request;
          DELETE FROM balance;
@@ -785,4 +791,82 @@ expect.extend({
       message: () => `expected DomainError(${code}), got ${String(received)}`,
     };
   },
+});
+
+// ── audit-event emission (TRD §18) ────────────────────────────────────────
+
+describe('RequestService audit-event emission', () => {
+  let ctx: Ctx;
+  beforeAll(async () => {
+    ctx = await buildContext();
+  });
+  afterAll(async () => {
+    await ctx.cleanup();
+  });
+  beforeEach(async () => {
+    ctx.resetServiceDb();
+    await ctx.harness.reset();
+    await ctx.harness.seedEmployee({
+      employeeId: 'emp-1',
+      employment: [{ locationId: 'loc-1', effectiveFrom: '2025-01-01' }],
+      balances: [{ locationId: 'loc-1', leaveTypeId: 'pto', available: '10' }],
+    });
+    await ctx.harness.seedLeaveTypeAvailability({
+      locationId: 'loc-1',
+      leaveTypeId: 'pto',
+      isActive: true,
+      effectiveFrom: '2025-01-01',
+    });
+    await ctx.bootstrap.handleEmployeeCreatedEvent({
+      employeeId: 'emp-1',
+      hcmVersion: 1n,
+      initialEmployment: { locationId: 'loc-1', effectiveFrom: '2025-01-01' },
+    });
+    ctx.leaveTypes.applyHcmUpdate({
+      locationId: 'loc-1',
+      leaveTypeId: 'pto',
+      effectiveFrom: '2025-01-01',
+      effectiveTo: null,
+      isActive: true,
+      hcmVersion: 1n,
+    });
+  });
+
+  it('records REQUEST_CREATED with INFO severity and the ctx correlationId', async () => {
+    const r = await ctx.request.create(createInput(), actor('emp-1'), 'idem-audit-create');
+    const events = ctx.audit.findByEntity('TimeOffRequest', r.id);
+    expect(events.map((e) => e.action)).toEqual(['REQUEST_CREATED']);
+    expect(events[0]).toMatchObject({
+      severity: 'INFO',
+      actor: 'emp-1',
+      correlationId: 'corr-emp-1',
+    });
+    expect(events[0]?.after).toMatchObject({
+      state: 'PENDING_APPROVAL',
+      units: '3',
+    });
+  });
+
+  it('records REQUEST_APPROVED with before+after state diff', async () => {
+    const r = await ctx.request.create(createInput(), actor('emp-1'), 'idem-audit-create-2');
+    await ctx.request.approve(r.id, actor('mgr-1'), 'idem-audit-approve');
+    const events = ctx.audit.findByEntity('TimeOffRequest', r.id);
+    expect(events.map((e) => e.action)).toEqual(['REQUEST_CREATED', 'REQUEST_APPROVED']);
+    const approved = events[1]!;
+    expect(approved.before).toEqual({ state: 'PENDING_APPROVAL' });
+    expect(approved.after).toMatchObject({ state: 'APPROVED' });
+  });
+
+  it('groups every event for a saga invocation under the same correlationId', async () => {
+    const r = await ctx.request.create(createInput(), actor('emp-1'), 'idem-audit-create-3');
+    await ctx.request.approve(r.id, actor('mgr-1'), 'idem-audit-approve-3');
+    await ctx.request.cancel(r.id, actor('emp-1'), 'idem-audit-cancel-3');
+    expect(ctx.audit.findByCorrelation('corr-emp-1').map((e) => e.action)).toEqual([
+      'REQUEST_CREATED',
+      'REQUEST_CANCELLED',
+    ]);
+    expect(ctx.audit.findByCorrelation('corr-mgr-1').map((e) => e.action)).toEqual([
+      'REQUEST_APPROVED',
+    ]);
+  });
 });

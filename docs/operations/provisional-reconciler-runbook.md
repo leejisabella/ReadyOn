@@ -58,4 +58,4 @@ Today the only operator-facing trigger is the `triggerProvisionalReconciliation`
 
 ## Snapshot retention
 
-After `CONFIRMED` or `NO_OP`, the full `localStateSnapshot` is replaced with a compact `localStateSnapshotSummary` (ADR-022). Full snapshots are retained only for `REJECTED_ESCALATED` — those are the cases HR investigates. The retention policy is hardcoded today; the `reconciler.snapshotRetention.summarizeAfterSuccess = false` override from TRD §16 is not yet wired.
+After `CONFIRMED` or `NO_OP`, the full `localStateSnapshot` is replaced with a compact `localStateSnapshotSummary` (ADR-022). Full snapshots are retained only for `REJECTED_ESCALATED` — those are the cases HR investigates. The retention policy is hardcoded today; the `reconciler.snapshotRetention.summarizeAfterSuccess = false` override from TRD §16 is not yet wired — see [`EXTENSION_ROADMAP.md` — Flag 3](../EXTENSION_ROADMAP.md#flag-3--remaining-trd-16-config-knobs).

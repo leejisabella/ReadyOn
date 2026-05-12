@@ -52,6 +52,8 @@ Inspect the inbox queue depth. If the batch is producing more events than the pr
 - **Drift classification** (TRD §10.2 — `ANNIVERSARY_BUMP`, `ANNUAL_REFRESH`, `MISSED_WEBHOOK`, `RETRO_CORRECTION`, `UNKNOWN_DRIFT`) is described in the spec but not produced by the current batch reconciler. The reconciler applies newer-`hcmVersion` rows without categorising them.
 - **`BALANCE_RECONCILIATION_APPLIED` audit events** are not emitted. The audit catalogue today covers the saga and the provisional reconciler — see [`audit-event.types.ts`](../../apps/service/src/infrastructure/observability/audit-event.types.ts).
 
+Rationale and extension plan: [`EXTENSION_ROADMAP.md` — Flag 2](../EXTENSION_ROADMAP.md#flag-2--drift-classification-on-batch-reconciliation-trd-102).
+
 ## Provisional reconciler
 
 Separate cadence; see [`provisional-reconciler-runbook.md`](provisional-reconciler-runbook.md).

@@ -187,13 +187,15 @@ Coverage targets per `docs/03_Test_Plan.md` §14 (≥90% statement, ≥85% branc
 
 ## Known gaps
 
-The TRD describes a few features that are spec'd but not yet implemented. Each is documented as a `not yet implemented` marker in the code rather than carrying placeholder behaviour:
+The TRD describes features beyond what the brief required. Each is a documented, deliberate deferral — not an oversight — and each carries a `not yet implemented` marker in the code rather than placeholder behaviour:
 
-- **Mock HCM adversarial modes** (TRD §17.3) — `flaky`, `silent_no_op`, `wrong_delta`, etc. The mock currently runs only in `normal` mode.
-- **Webhook scheduling from the mock** (TRD §17, harness `scheduleBalanceUpdate` family) — events are seeded via admin endpoints in tests rather than scheduled.
-- **Outbox-routed bootstrap and provisional reconciliation** (TRD §10.3 `BOOTSTRAP_EMPLOYEE` / `RECONCILE_PROVISIONAL` types) — both currently call HCM directly through the port instead.
-- **Drift classification** (TRD §10.2 `ANNIVERSARY_BUMP` / `ANNUAL_REFRESH` / `RETRO_CORRECTION` / `MISSED_WEBHOOK` / `UNKNOWN_DRIFT`) — batch reconciler applies newer-`hcmVersion` rows without categorising the divergence.
-- **Auto-revalidation of `UNDER_HOLD_DEFICIT` requests** (TRD §6.2 `NEEDS_REVALIDATION` transition) — affected requests must be inspected manually.
-- **`policy.advanceLeaveToleranceUnits`** (TRD §16) — local advisory pre-checks not yet consumed by the saga.
+| Gap | TRD § | Why deferred |
+| --- | --- | --- |
+| `ingestHcmEvent` GraphQL mutation | §7.1 | Functionally equivalent HTTP webhook (`POST /webhooks/hcm`) already in place; webhook is the idiomatic HCM-driven path |
+| Drift classification on batch reconciliation | §10.2 | Spec requires per-tenant policy data (anniversary, accrual rate, fiscal year) the system doesn't yet load; shipping without it would mis-classify |
+| Remaining TRD §16 config knobs (`outbox.*`, `inbox.*`, snapshot retention, policy hints) | §16 | Hardcoded defaults match the spec; env-tunability is YAGNI until ops observes real workloads |
+| Mock HCM adversarial modes + reachability toggle | §17.3 | Brief asks for "basic logic to simulate balance changes" — admin-seeding satisfies that; real fault injection is a separate build |
+
+**Full rationale, brief-vs-TRD compliance check, and concrete extension plans for each gap are in [`docs/EXTENSION_ROADMAP.md`](docs/EXTENSION_ROADMAP.md).**
 
 See TRD §19 for the full out-of-scope-but-boundary-defined list and `docs/operations/*-runbook.md` for which gaps each operational scenario routes around.

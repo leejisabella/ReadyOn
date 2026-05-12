@@ -125,6 +125,7 @@ export interface InsertRequestArgs {
 export class RequestStore {
   private readonly findStmt: Statement<[string]>;
   private readonly findByIdemStmt: Statement<[string]>;
+  private readonly listForEmployeeStmt: Statement<[string]>;
   private readonly insertStmt: Statement;
   private readonly markApprovedStmt: Statement;
   private readonly markRejectedStmt: Statement;
@@ -141,6 +142,12 @@ export class RequestStore {
     );
     this.findByIdemStmt = db.prepare(
       `SELECT ${SELECT_COLUMNS} FROM time_off_request WHERE idempotency_key = ?`,
+    );
+    this.listForEmployeeStmt = db.prepare(
+      `SELECT ${SELECT_COLUMNS}
+         FROM time_off_request
+        WHERE employee_id = ?
+        ORDER BY created_at DESC`,
     );
     this.insertStmt = db.prepare(
       `INSERT INTO time_off_request
@@ -224,6 +231,19 @@ export class RequestStore {
   findByIdempotencyKey(key: string): TimeOffRequestRow | null {
     const row = this.findByIdemStmt.get(key) as TimeOffRequestRowRaw | undefined;
     return row ? hydrate(row) : null;
+  }
+
+  /**
+   * Returns the employee's requests newest-first. When `states` is provided,
+   * filters to that set; otherwise returns every row.
+   */
+  listForEmployee(
+    employeeId: string,
+    states: ReadonlyArray<RequestState> | null = null,
+  ): TimeOffRequestRow[] {
+    const rows = this.listForEmployeeStmt.all(employeeId) as TimeOffRequestRowRaw[];
+    const filtered = states === null ? rows : rows.filter((r) => states.includes(r.state));
+    return filtered.map(hydrate);
   }
 
   insertPending(args: InsertRequestArgs): void {

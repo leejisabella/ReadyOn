@@ -19,8 +19,8 @@ export interface HcmAdapterModuleOptions {
 
 /**
  * Wires the HCM adapter and the health monitor. The monitor is a singleton —
- * every adapter call updates it, and downstream subscribers (provisional
- * reconciler in Slice 12) listen for HEALTHY↔UNHEALTHY transitions.
+ * every adapter call updates it, and downstream subscribers (the provisional
+ * reconciler) listen for HEALTHY↔UNHEALTHY transitions.
  *
  * Only the Mock adapter is registered today; real vendor adapters add cases
  * to a switch inside this module without touching consumers.

@@ -1,10 +1,12 @@
 import { Field, ID, ObjectType } from '@nestjs/graphql';
 import Decimal from 'decimal.js';
-import { DateTime } from "../scalars/date-time.scalar";
+import type { BalanceState as DomainBalanceState } from '../../domain/balance/balance.store';
+import type { Holds } from '../../domain/balance/hold-accountant';
 import { BalanceState } from '../enums';
+import { DateTime } from '../scalars/date-time.scalar';
 
 @ObjectType('Holds', { description: 'The three hold buckets that bound a balance locally.' })
-export class HoldsType {
+export class HoldsType implements Holds {
   @Field(() => Decimal) readonly pending!: Decimal;
   @Field(() => Decimal) readonly approved!: Decimal;
   @Field(() => Decimal) readonly provisional!: Decimal;
@@ -16,9 +18,9 @@ export class BalanceType {
   @Field(() => ID) readonly locationId!: string;
   @Field(() => ID) readonly leaveTypeId!: string;
   @Field(() => Decimal) readonly available!: Decimal;
-  @Field(() => HoldsType) readonly holds!: HoldsType;
+  @Field(() => HoldsType) readonly holds!: Holds;
   @Field(() => String) readonly hcmVersion!: string;
   @Field(() => DateTime) readonly hcmEffectiveAt!: string;
   @Field(() => DateTime) readonly lastReconciledAt!: string;
-  @Field(() => BalanceState) readonly state!: BalanceState;
+  @Field(() => BalanceState) readonly state!: DomainBalanceState;
 }

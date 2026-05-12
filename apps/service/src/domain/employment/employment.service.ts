@@ -46,8 +46,7 @@ export class EmploymentService {
   /**
    * Converge local state on an HCM-sourced row. Returns `true` when local
    * state changed (insert, or update at a newer `hcmVersion`), `false`
-   * for stale replays. Callers gate downstream effects — most importantly
-   * `RequestService.revalidateForEmployee` (Slice 9+) — on the return value.
+   * for stale replays. Callers gate downstream effects on the return value.
    *
    * @ref docs/01_TRD.md §10.1 (hcmVersion is the ordering authority)
    */

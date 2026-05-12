@@ -177,14 +177,14 @@ describe('MockHcmTestHarness (Layer 24)', () => {
     });
   });
 
-  // ── Mode + reachability stubs (Slice 15 wires the implementations) ──────
+  // ── Mode + reachability stubs (TRD §17.3 — not yet implemented) ─────────
 
   describe('mode + reachability', () => {
     it('setMode("normal") is a no-op', async () => {
       await expect(harness.setMode('normal')).resolves.toBeUndefined();
     });
 
-    it('setMode("flaky") throws MockHcmHarnessError until Slice 15', async () => {
+    it('setMode("flaky") throws — adversarial modes are not yet implemented', async () => {
       await expect(harness.setMode('flaky')).rejects.toThrow(MockHcmHarnessError);
     });
 
@@ -192,7 +192,7 @@ describe('MockHcmTestHarness (Layer 24)', () => {
       await expect(harness.setReachability('on')).resolves.toBeUndefined();
     });
 
-    it('setReachability("off") throws MockHcmHarnessError until Slice 15', async () => {
+    it('setReachability("off") throws — reachability control is not yet implemented', async () => {
       await expect(harness.setReachability('off')).rejects.toThrow(MockHcmHarnessError);
     });
   });

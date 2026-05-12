@@ -1,6 +1,9 @@
 import { Field, Int, ObjectType } from '@nestjs/graphql';
-import { DateTime } from "../scalars/date-time.scalar";
+import type { HrReviewCategory } from '../../domain/hr-review-queue/hr-review-queue.service';
+import type { ProvisionalActionRow } from '../../domain/provisional-action/provisional-action.store';
+import type { TimeOffRequestRow } from '../../domain/request/request.store';
 import { HrReviewCategoryEnum } from '../enums';
+import { DateTime } from '../scalars/date-time.scalar';
 import { ProvisionalActionType } from './provisional-action.type';
 import { TimeOffRequestType } from './time-off-request.type';
 
@@ -14,12 +17,12 @@ export class PageInfoType {
 
 @ObjectType('HrReviewItem', { description: 'A single request flagged for HR review.' })
 export class HrReviewItemType {
-  @Field(() => TimeOffRequestType) readonly request!: TimeOffRequestType;
-  @Field(() => HrReviewCategoryEnum) readonly category!: HrReviewCategoryEnum;
+  @Field(() => TimeOffRequestType) readonly request!: TimeOffRequestRow;
+  @Field(() => HrReviewCategoryEnum) readonly category!: HrReviewCategory;
   @Field(() => DateTime) readonly flaggedAt!: string;
   @Field(() => String) readonly reason!: string;
   @Field(() => [ProvisionalActionType])
-  readonly provisionalActions!: ReadonlyArray<ProvisionalActionType>;
+  readonly provisionalActions!: ReadonlyArray<ProvisionalActionRow>;
 }
 
 @ObjectType('HrReviewItemEdge')

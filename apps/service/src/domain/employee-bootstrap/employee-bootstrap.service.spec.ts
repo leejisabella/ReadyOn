@@ -7,6 +7,9 @@ import {
   type HcmPort,
 } from '@time-off/hcm-port';
 import { makeServiceTestDb } from '../../../test/db-helper';
+import { AuditEventService } from '../../infrastructure/observability/audit-event.service';
+import { AuditEventStore } from '../../infrastructure/observability/audit-event.store';
+import { CorrelationContext } from '../../infrastructure/observability/correlation.context';
 import { EmploymentService } from '../employment/employment.service';
 import { EmploymentStore } from '../employment/employment.store';
 import { EmployeeBootstrapService } from './employee-bootstrap.service';
@@ -41,11 +44,15 @@ describe('EmployeeBootstrapService', () => {
   let db: Database;
   let store: EmployeeStore;
   let employment: EmploymentService;
+  let audit: AuditEventStore;
+  let auditService: AuditEventService;
 
   beforeEach(() => {
     db = makeServiceTestDb();
     store = new EmployeeStore(db);
     employment = new EmploymentService(new EmploymentStore(db));
+    audit = new AuditEventStore(db);
+    auditService = new AuditEventService(audit, new CorrelationContext());
   });
 
   afterEach(() => db.close());
@@ -60,7 +67,7 @@ describe('EmployeeBootstrapService', () => {
         lastSeenInBatchAt: null,
       });
       const fetchEmployee = jest.fn();
-      const service = new EmployeeBootstrapService(store, employment, makeHcmStub({ fetchEmployee }));
+      const service = new EmployeeBootstrapService(store, employment, auditService, makeHcmStub({ fetchEmployee }));
       const result = await service.ensureBootstrapped('emp-1');
       expect(result.bootstrapSource).toBe('WEBHOOK');
       expect(fetchEmployee).not.toHaveBeenCalled();
@@ -70,6 +77,7 @@ describe('EmployeeBootstrapService', () => {
       const service = new EmployeeBootstrapService(
         store,
         employment,
+        auditService,
         makeHcmStub({ fetchEmployee: async () => sampleEmployeeResponse() }),
       );
       const result = await service.ensureBootstrapped('emp-1');
@@ -82,6 +90,7 @@ describe('EmployeeBootstrapService', () => {
       const service = new EmployeeBootstrapService(
         store,
         employment,
+        auditService,
         makeHcmStub({
           fetchEmployee: async () => {
             throw new HcmEmployeeNotFoundError('emp-ghost');
@@ -101,6 +110,7 @@ describe('EmployeeBootstrapService', () => {
       const service = new EmployeeBootstrapService(
         store,
         employment,
+        auditService,
         makeHcmStub({
           fetchEmployee: async () => {
             throw new HcmTransientError('upstream timeout');
@@ -116,6 +126,7 @@ describe('EmployeeBootstrapService', () => {
       const service = new EmployeeBootstrapService(
         store,
         employment,
+        auditService,
         makeHcmStub({
           fetchEmployee: async () => {
             // pretend the webhook lands first
@@ -139,7 +150,7 @@ describe('EmployeeBootstrapService', () => {
 
   describe('handleEmployeeCreatedEvent', () => {
     it('inserts Employee + initial Employment from the event payload', async () => {
-      const service = new EmployeeBootstrapService(store, employment, makeHcmStub());
+      const service = new EmployeeBootstrapService(store, employment, auditService, makeHcmStub());
       await service.handleEmployeeCreatedEvent({
         employeeId: 'emp-2',
         hcmVersion: 3n,
@@ -152,7 +163,7 @@ describe('EmployeeBootstrapService', () => {
     });
 
     it('is a no-op when the employee already exists (duplicate webhook)', async () => {
-      const service = new EmployeeBootstrapService(store, employment, makeHcmStub());
+      const service = new EmployeeBootstrapService(store, employment, auditService, makeHcmStub());
       await service.handleEmployeeCreatedEvent({
         employeeId: 'emp-3',
         hcmVersion: 1n,
@@ -172,7 +183,7 @@ describe('EmployeeBootstrapService', () => {
 
   describe('bootstrapFromBatch', () => {
     it('inserts a new employee with source=BATCH and stamps lastSeenInBatchAt', async () => {
-      const service = new EmployeeBootstrapService(store, employment, makeHcmStub());
+      const service = new EmployeeBootstrapService(store, employment, auditService, makeHcmStub());
       await service.bootstrapFromBatch({ employeeId: 'emp-batch', hcmVersion: 10n });
       const row = store.find('emp-batch');
       expect(row?.bootstrapSource).toBe('BATCH');
@@ -180,7 +191,7 @@ describe('EmployeeBootstrapService', () => {
     });
 
     it('only updates lastSeenInBatchAt on subsequent calls for an existing employee', async () => {
-      const service = new EmployeeBootstrapService(store, employment, makeHcmStub());
+      const service = new EmployeeBootstrapService(store, employment, auditService, makeHcmStub());
       await service.handleEmployeeCreatedEvent({
         employeeId: 'emp-known',
         hcmVersion: 1n,

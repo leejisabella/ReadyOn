@@ -114,11 +114,14 @@ export class OutboxWorker {
         return;
       case 'BOOTSTRAP_EMPLOYEE':
       case 'RECONCILE_PROVISIONAL':
-        // Wired in Slices 10/16 entrypoints. For Slice 13, fail permanently so
-        // anyone enqueueing prematurely sees an unmistakable signal.
+        // TRD §10.3 reserves these entry types. Neither bootstrap nor the
+        // provisional reconciler currently route through the outbox — both
+        // call HCM directly via the port. If something enqueues either type,
+        // the unhandled dispatch is a programmer error, not a transient
+        // failure, so fail permanently rather than retry forever.
         throw new HcmPermanentError(
           'OTHER',
-          `Outbox dispatch for type ${entry.type} is not implemented yet`,
+          `outbox dispatch for type ${entry.type} has no producer`,
         );
     }
   }

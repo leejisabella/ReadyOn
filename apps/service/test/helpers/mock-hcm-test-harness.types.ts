@@ -16,7 +16,7 @@ export interface MockHcmTestHarnessOptions {
   readonly dbPath?: string;
 }
 
-// ─── Mode + reachability (Slice 15 wires the adversarial implementations) ───
+// ─── Mode + reachability (TRD §17.3 — not yet implemented in the mock) ────
 
 export type MockHcmMode =
   | 'normal'

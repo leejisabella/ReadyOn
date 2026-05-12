@@ -6,6 +6,7 @@ import { EmployeeBootstrapService } from '../../domain/employee-bootstrap/employ
 import { EmploymentService } from '../../domain/employment/employment.service';
 import { LeaveTypeAvailabilityService } from '../../domain/leave-type-availability/leave-type-availability.service';
 import { HcmAdapterModule } from '../hcm/hcm-adapter.module';
+import { ObservabilityModule } from '../observability/observability.module';
 import { DatabaseModule } from '../persistence/database.module';
 import { InboxProcessor } from './inbox-processor.service';
 import { InboxModule } from './inbox.module';
@@ -28,6 +29,7 @@ async function buildContext(): Promise<Ctx> {
   const moduleRef = await Test.createTestingModule({
     imports: [
       DatabaseModule.forRoot({ dbPath: ':memory:' }),
+      ObservabilityModule.forRoot(),
       HcmAdapterModule.forRoot({
         adapter: { baseUrl: harness.baseUrl, timeoutMs: 2000 },
       }),

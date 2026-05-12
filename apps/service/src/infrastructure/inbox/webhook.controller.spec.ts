@@ -2,6 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import supertest from 'supertest';
 import { HcmAdapterModule } from '../hcm/hcm-adapter.module';
+import { ObservabilityModule } from '../observability/observability.module';
 import { DatabaseModule } from '../persistence/database.module';
 import { InboxModule } from './inbox.module';
 import { InboxStore } from './inbox.store';
@@ -30,6 +31,7 @@ describe('WebhookController (POST /webhooks/hcm)', () => {
     const moduleRef = await Test.createTestingModule({
       imports: [
         DatabaseModule.forRoot({ dbPath: ':memory:' }),
+        ObservabilityModule.forRoot(),
         HcmAdapterModule.forRoot({
           adapter: { baseUrl: 'http://127.0.0.1:1', timeoutMs: 100 },
         }),

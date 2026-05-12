@@ -1,7 +1,7 @@
 import { Args, ID, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { DomainError } from '@time-off/domain-types';
 import { RequestService, type ActorContext } from '../../domain/request/request.service';
-import { RequestStore } from '../../domain/request/request.store';
+import { RequestStore, type TimeOffRequestRow } from '../../domain/request/request.store';
 import { CurrentActor } from '../auth/current-actor.decorator';
 import { RequestState } from '../enums';
 import { CreateTimeOffRequestInputType } from '../inputs/create-time-off-request.input';
@@ -33,8 +33,8 @@ export class TimeOffRequestResolver {
     nullable: true,
     description: 'Fetch a single time-off request by id.',
   })
-  timeOffRequest(@Args('id', { type: () => ID }) id: string): TimeOffRequestType | null {
-    return this.store.find(id) as TimeOffRequestType | null;
+  timeOffRequest(@Args('id', { type: () => ID }) id: string): TimeOffRequestRow | null {
+    return this.store.find(id);
   }
 
   @Query(() => [TimeOffRequestType], {
@@ -44,8 +44,8 @@ export class TimeOffRequestResolver {
     @Args('employeeId', { type: () => ID }) employeeId: string,
     @Args('states', { type: () => [RequestState], nullable: true })
     states: ReadonlyArray<RequestState> | null,
-  ): TimeOffRequestType[] {
-    return this.store.listForEmployee(employeeId, states ?? null) as TimeOffRequestType[];
+  ): TimeOffRequestRow[] {
+    return this.store.listForEmployee(employeeId, states ?? null);
   }
 
   // ── Mutations ────────────────────────────────────────────────────────────
@@ -57,8 +57,7 @@ export class TimeOffRequestResolver {
     @CurrentActor() actor: ActorContext,
   ): Promise<TimeOffRequestPayload> {
     assertActorMatches(actor.actorId, input.employeeId, 'employeeId');
-    const request = await this.requests.create(input, actor, idempotencyKey);
-    return { request: request as TimeOffRequestType };
+    return { request: await this.requests.create(input, actor, idempotencyKey) };
   }
 
   @Mutation(() => TimeOffRequestPayload, { description: 'TRD §9.2' })
@@ -69,8 +68,7 @@ export class TimeOffRequestResolver {
     @CurrentActor() actor: ActorContext,
   ): Promise<TimeOffRequestPayload> {
     assertActorMatches(actor.actorId, approverId, 'approverId');
-    const request = await this.requests.approve(id, actor, idempotencyKey);
-    return { request: request as TimeOffRequestType };
+    return { request: await this.requests.approve(id, actor, idempotencyKey) };
   }
 
   @Mutation(() => TimeOffRequestPayload, { description: 'TRD §9.5.2 (break-glass)' })
@@ -82,13 +80,9 @@ export class TimeOffRequestResolver {
     @CurrentActor() actor: ActorContext,
   ): Promise<TimeOffRequestPayload> {
     assertActorMatches(actor.actorId, approverId, 'approverId');
-    const request = await this.requests.approveProvisionally(
-      id,
-      justification,
-      actor,
-      idempotencyKey,
-    );
-    return { request: request as TimeOffRequestType };
+    return {
+      request: await this.requests.approveProvisionally(id, justification, actor, idempotencyKey),
+    };
   }
 
   @Mutation(() => TimeOffRequestPayload, { description: 'TRD §9.3' })
@@ -100,8 +94,7 @@ export class TimeOffRequestResolver {
     @CurrentActor() actor: ActorContext,
   ): Promise<TimeOffRequestPayload> {
     assertActorMatches(actor.actorId, approverId, 'approverId');
-    const request = await this.requests.reject(id, reason, actor, idempotencyKey);
-    return { request: request as TimeOffRequestType };
+    return { request: await this.requests.reject(id, reason, actor, idempotencyKey) };
   }
 
   @Mutation(() => TimeOffRequestPayload, {
@@ -121,7 +114,7 @@ export class TimeOffRequestResolver {
           acknowledgedHcmUnavailable: true,
         })
       : await this.requests.cancel(id, actor, idempotencyKey);
-    return { request: request as TimeOffRequestType };
+    return { request };
   }
 }
 
@@ -141,4 +134,3 @@ function assertActorMatches(headerActorId: string, argActorId: string, argName: 
     });
   }
 }
-

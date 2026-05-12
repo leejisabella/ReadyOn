@@ -104,13 +104,13 @@ export class AuditEventStore {
       `SELECT ${SELECT_COLUMNS}
          FROM audit_event
         WHERE entity_type = ? AND entity_id = ?
-        ORDER BY occurred_at ASC, id ASC`,
+        ORDER BY occurred_at ASC, rowid ASC`,
     );
     this.findByCorrelationStmt = db.prepare(
       `SELECT ${SELECT_COLUMNS}
          FROM audit_event
         WHERE correlation_id = ?
-        ORDER BY occurred_at ASC, id ASC`,
+        ORDER BY occurred_at ASC, rowid ASC`,
     );
   }
 

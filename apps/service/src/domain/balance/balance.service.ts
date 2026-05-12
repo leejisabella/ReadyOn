@@ -30,8 +30,8 @@ export interface BalanceSnapshot {
  *   - Inserts and HCM updates set `SYNCED` unless total holds exceed the new
  *     `available`, in which case `UNDER_HOLD_DEFICIT` is set.
  *   - Local hold mutations recompute state the same way.
- *   - `RECONCILING` is sticky — managed exclusively by the reconciler
- *     (Slice 14+). Other operations preserve it.
+ *   - `RECONCILING` is sticky — managed exclusively by the reconciler.
+ *     Other operations preserve it.
  *
  * Multi-step ops (read → compute → write) run inside a SQLite transaction so
  * a partial state is impossible if a single step throws.
@@ -177,11 +177,11 @@ export class BalanceService {
 }
 
 /**
- * Pure state-machine derivation. `RECONCILING` is owned by the reconciler;
- * any other prior state collapses to `UNDER_HOLD_DEFICIT` or `SYNCED` based
- * on whether the deficit invariant holds. `STALE` is set by the staleness
- * sweeper (future slice) and reset on any HCM update — handled here as
- * "anything not RECONCILING/STALE returns to SYNCED unless deficit."
+ * Pure state-machine derivation. `RECONCILING` is owned by the reconciler
+ * and propagates as-is; every other prior state collapses to
+ * `UNDER_HOLD_DEFICIT` or `SYNCED` based on whether the deficit invariant
+ * holds. (TRD §5.1 also lists `STALE`; the staleness sweep is delegated to
+ * `DriftSweep`, which schedules point-reads rather than flipping state.)
  */
 function derive(prior: BalanceState, available: Decimal, holds: Holds): BalanceState {
   if (prior === 'RECONCILING') return 'RECONCILING';

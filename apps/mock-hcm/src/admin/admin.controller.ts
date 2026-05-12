@@ -136,7 +136,7 @@ const SnapshotSchema = z
  * so test setup is order-independent.
  *
  * NOT part of TRD §17.2's public HCM contract — these endpoints exist solely
- * to drive mock state from tests via {@link MockHcmTestHarness} (Slice 5).
+ * to drive mock state from tests via {@link MockHcmTestHarness}.
  */
 @Controller('admin')
 export class AdminController {

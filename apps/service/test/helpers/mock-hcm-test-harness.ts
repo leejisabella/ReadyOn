@@ -199,40 +199,41 @@ export class MockHcmTestHarness {
     await this.request('POST', '/admin/deleteEmployee', { employeeId });
   }
 
-  // ── Mode + reachability (Slice 15 implements; stubs throw clearly) ──────
+  // ── Mode + reachability (TRD §17.3 surface; not yet implemented) ────────
+  //
+  // The Mock HCM currently runs only in `normal` mode with full reachability.
+  // Adversarial modes (flaky, silent_no_op, stale_version, …) and reachability
+  // toggling are part of TRD §17.3; calls fail fast until the mock grows
+  // support for them.
 
   async setMode(mode: MockHcmMode): Promise<void> {
     if (mode !== 'normal') {
-      throw new MockHcmHarnessError(
-        `Adversarial mode '${mode}' is not implemented yet (Slice 15 wires the modes).`,
-      );
+      throw new MockHcmHarnessError(`Adversarial mode '${mode}' is not implemented in the mock.`);
     }
   }
 
   async setReachability(state: ReachabilityState): Promise<void> {
     if (state !== 'on') {
-      throw new MockHcmHarnessError(
-        `Reachability control is not implemented yet (Slice 15 wires the modes).`,
-      );
+      throw new MockHcmHarnessError(`Reachability control is not implemented in the mock.`);
     }
   }
 
-  // ── Event scheduling (Slice 15+) ─────────────────────────────────────────
+  // ── Event scheduling (TRD §17 — not yet implemented) ────────────────────
 
   async scheduleBalanceUpdate(): Promise<void> {
-    throw new MockHcmHarnessError('Webhook scheduling is not implemented yet (Slice 15+).');
+    throw new MockHcmHarnessError('Webhook scheduling is not implemented in the mock.');
   }
 
   async scheduleEmploymentChange(): Promise<void> {
-    throw new MockHcmHarnessError('Webhook scheduling is not implemented yet (Slice 15+).');
+    throw new MockHcmHarnessError('Webhook scheduling is not implemented in the mock.');
   }
 
   async scheduleEmployeeCreated(): Promise<void> {
-    throw new MockHcmHarnessError('Webhook scheduling is not implemented yet (Slice 15+).');
+    throw new MockHcmHarnessError('Webhook scheduling is not implemented in the mock.');
   }
 
   async triggerWebhookFlood(): Promise<void> {
-    throw new MockHcmHarnessError('Webhook flood is not implemented yet (Slice 15+).');
+    throw new MockHcmHarnessError('Webhook flood is not implemented in the mock.');
   }
 
   // ── Assertions ──────────────────────────────────────────────────────────

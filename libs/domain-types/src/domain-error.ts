@@ -19,9 +19,8 @@ export interface DomainErrorOptions {
  * Canonical error type for every domain failure.
  *
  * Domain code throws `DomainError` with one of the codes in TRD §14.6; the
- * API layer formats it into a GraphQL error payload via `ErrorMapper`
- * (introduced in Slice 3+ when GraphQL is wired). Internal callers route on
- * `code` and `retryable` without parsing strings.
+ * API layer formats it into a GraphQL error payload via `DomainErrorFilter`.
+ * Internal callers route on `code` and `retryable` without parsing strings.
  *
  * @invariant The `retryable` field always matches the metadata entry for
  *   `code` — call sites cannot override it.

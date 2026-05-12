@@ -309,8 +309,8 @@ export class RequestService {
    * Break-glass approval during sustained HCM outage. The decision is
    * recorded as an append-only `ProvisionalAction` event; the request flips
    * to `PROVISIONALLY_APPROVED` and the pending hold is promoted to the
-   * `provisional` bucket. The provisional reconciler (Slice 16) drains the
-   * event back to HCM on recovery.
+   * `provisional` bucket. The provisional reconciler drains the event back
+   * to HCM on recovery (TRD §9.5.3).
    *
    * @throws DomainError(BREAK_GLASS_NOT_AUTHORIZED) when the caller lacks role.
    * @throws DomainError(BREAK_GLASS_OUTAGE_THRESHOLD_NOT_MET) when HCM is
@@ -600,7 +600,8 @@ export class RequestService {
       return this.mustFind(requestId);
     }
 
-    // APPROVED → HCM credit (synchronous; CANCELLATION_PENDING flow is Slice 13).
+    // APPROVED → HCM credit (synchronous). HCM-unavailable callers route
+    // through `cancelProvisionally` instead (TRD §9.5.4).
     let hcmResponse;
     try {
       hcmResponse = await this.hcm.releaseBalance(

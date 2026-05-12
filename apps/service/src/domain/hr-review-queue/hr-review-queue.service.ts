@@ -12,7 +12,7 @@ import type { TimeOffRequestRow } from '../request/request.store';
 /**
  * The three categories of request that surface in the HR Review Queue
  * (TRD §9.5.5 "HR review surface"). Mapped to GraphQL `HrReviewCategory`
- * in the API layer (Slice 19).
+ * by the API layer.
  */
 export type HrReviewCategory =
   | 'ESCALATED_PRE_LEAVE'

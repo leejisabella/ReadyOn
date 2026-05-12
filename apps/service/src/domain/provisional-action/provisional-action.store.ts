@@ -108,6 +108,12 @@ export interface MarkReconciledArgs {
  * @ref docs/02_Assumptions_and_Decisions.md ADR-019, ADR-022
  * @ref docs/04_Module_Plan.md §3.7
  */
+export interface ProvisionalActionFilter {
+  readonly requestId?: string | null;
+  readonly invokedBy?: string | null;
+  readonly reconciliationState?: ReconciliationState | null;
+}
+
 @Injectable()
 export class ProvisionalActionStore {
   private readonly findStmt: Statement<[string]>;
@@ -116,8 +122,10 @@ export class ProvisionalActionStore {
   private readonly insertStmt: Statement;
   private readonly markReconciledStmt: Statement;
   private readonly updateStaleAlertStmt: Statement;
+  private readonly db: Database;
 
   constructor(@Inject(DATABASE) db: Database) {
+    this.db = db;
     this.findStmt = db.prepare(
       `SELECT ${SELECT_COLUMNS} FROM provisional_action WHERE id = ?`,
     );
@@ -173,6 +181,34 @@ export class ProvisionalActionStore {
 
   listPending(): ProvisionalActionRow[] {
     return (this.listPendingStmt.all() as ProvisionalActionRowRaw[]).map(hydrate);
+  }
+
+  /**
+   * Filtered lookup. Every filter field is optional — passing an empty object
+   * returns every row newest-first. Combinations are ANDed; the SQL is built
+   * once per filter shape from a tiny set of fragments, so the prepared-
+   * statement cache is bounded.
+   */
+  query(filter: ProvisionalActionFilter): ProvisionalActionRow[] {
+    const clauses: string[] = [];
+    const params: Record<string, string> = {};
+    if (filter.requestId != null) {
+      clauses.push('request_id = :requestId');
+      params.requestId = filter.requestId;
+    }
+    if (filter.invokedBy != null) {
+      clauses.push('invoked_by = :invokedBy');
+      params.invokedBy = filter.invokedBy;
+    }
+    if (filter.reconciliationState != null) {
+      clauses.push('reconciliation_state = :reconciliationState');
+      params.reconciliationState = filter.reconciliationState;
+    }
+    const where = clauses.length === 0 ? '' : `WHERE ${clauses.join(' AND ')}`;
+    const stmt = this.db.prepare(
+      `SELECT ${SELECT_COLUMNS} FROM provisional_action ${where} ORDER BY invoked_at ASC`,
+    );
+    return (stmt.all(params) as ProvisionalActionRowRaw[]).map(hydrate);
   }
 
   insert(args: InsertProvisionalActionArgs): void {

@@ -83,8 +83,8 @@ export class BalancesController {
   }
 
   /**
-   * NDJSON balance dump (TRD §10.2, §17.2). For Slice 4 the entire corpus
-   * streams in a single batch — pagination cursor support is future work.
+   * NDJSON balance dump (TRD §10.2, §17.2). The entire corpus streams in a
+   * single batch; cursor-based pagination is not yet implemented.
    */
   @Get('batch')
   batch(@Res() res: Response): void {

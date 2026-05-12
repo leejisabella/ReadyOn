@@ -54,8 +54,8 @@ HCM has a transaction with our idempotency key but with a different delta. This 
 
 ## Manual replay
 
-`scripts/replay-provisional-actions.ts` exposes a CLI for forcing reconciliation of specific actions by ID. Use only when normal tick has failed and you've verified the situation. Every manual replay appends to the `ReconciliationStep` log; the audit chain remains intact.
+Today the only operator-facing trigger is the `triggerProvisionalReconciliation` mutation — it ticks the drainer once. Per-action replay CLI is not yet implemented; the reconciler's restart-safe step-log design means a stuck action is best surfaced via `PROVISIONAL_ACTION_STALE` and addressed by fixing the upstream cause (HCM, lease holder, etc.) rather than forcing a per-action retry.
 
 ## Snapshot retention
 
-After `CONFIRMED` or `NO_OP`, the full `localStateSnapshot` is replaced with a compact `localStateSnapshotSummary` (ADR-022). Full snapshots are retained only for `REJECTED_ESCALATED`. If you need the full state of a CONFIRMED action for a dispute, set `reconciler.snapshotRetention.summarizeAfterSuccess = false` going forward (it cannot recover previously-summarized snapshots).
+After `CONFIRMED` or `NO_OP`, the full `localStateSnapshot` is replaced with a compact `localStateSnapshotSummary` (ADR-022). Full snapshots are retained only for `REJECTED_ESCALATED` — those are the cases HR investigates. The retention policy is hardcoded today; the `reconciler.snapshotRetention.summarizeAfterSuccess = false` override from TRD §16 is not yet wired.

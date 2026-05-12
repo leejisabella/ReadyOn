@@ -2,8 +2,9 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DomainError } from '@time-off/domain-types';
 import { HcmEmployeeNotFoundError, type HcmPort } from '@time-off/hcm-port';
 import { HCM_PORT } from '../../infrastructure/hcm/hcm-adapter.module';
+import { AuditEventService } from '../../infrastructure/observability/audit-event.service';
 import { EmploymentService } from '../employment/employment.service';
-import { EmployeeStore, type EmployeeRow } from './employee.store';
+import { EmployeeStore, type BootstrapSource, type EmployeeRow } from './employee.store';
 
 /**
  * Input passed by the inbox processor when an `EMPLOYEE_CREATED` webhook
@@ -46,6 +47,7 @@ export class EmployeeBootstrapService {
   constructor(
     private readonly store: EmployeeStore,
     private readonly employment: EmploymentService,
+    private readonly audit: AuditEventService,
     @Inject(HCM_PORT) private readonly hcm: HcmPort,
   ) {}
 
@@ -75,7 +77,7 @@ export class EmployeeBootstrapService {
       throw err;
     }
 
-    this.store.insertIfAbsent({
+    const inserted = this.store.insertIfAbsent({
       employeeId: response.employeeId,
       bootstrappedAt: new Date().toISOString(),
       bootstrapSource: 'LAZY_PULL',
@@ -91,6 +93,7 @@ export class EmployeeBootstrapService {
         hcmVersion: period.hcmVersion,
       });
     }
+    if (inserted) this.emitBootstrapped(response.employeeId, 'LAZY_PULL');
     return this.store.find(employeeId) ?? throwInsertRace(employeeId);
   }
 
@@ -100,7 +103,7 @@ export class EmployeeBootstrapService {
    * silent no-ops at both layers.
    */
   async handleEmployeeCreatedEvent(snapshot: EmployeeCreatedSnapshot): Promise<void> {
-    this.store.insertIfAbsent({
+    const inserted = this.store.insertIfAbsent({
       employeeId: snapshot.employeeId,
       bootstrappedAt: new Date().toISOString(),
       bootstrapSource: 'WEBHOOK',
@@ -114,6 +117,7 @@ export class EmployeeBootstrapService {
       effectiveTo: null,
       hcmVersion: snapshot.hcmVersion,
     });
+    if (inserted) this.emitBootstrapped(snapshot.employeeId, 'WEBHOOK');
   }
 
   /**
@@ -123,7 +127,7 @@ export class EmployeeBootstrapService {
    */
   async bootstrapFromBatch(row: BatchEmployeeRow): Promise<void> {
     const now = new Date().toISOString();
-    this.store.insertIfAbsent({
+    const inserted = this.store.insertIfAbsent({
       employeeId: row.employeeId,
       bootstrappedAt: now,
       bootstrapSource: 'BATCH',
@@ -131,6 +135,22 @@ export class EmployeeBootstrapService {
       lastSeenInBatchAt: now,
     });
     this.store.recordSeenInBatch(row.employeeId, now);
+    if (inserted) this.emitBootstrapped(row.employeeId, 'BATCH');
+  }
+
+  /**
+   * Emit `EMPLOYEE_BOOTSTRAPPED` exactly once per row (TRD §11.2). Only the
+   * path that actually inserted fires the event — concurrent racers silently
+   * lose their `insertIfAbsent` and skip emission.
+   */
+  private emitBootstrapped(employeeId: string, source: BootstrapSource): void {
+    this.audit.emit({
+      action: 'EMPLOYEE_BOOTSTRAPPED',
+      entityType: 'Employee',
+      entityId: employeeId,
+      actor: source === 'WEBHOOK' ? 'inbox' : source === 'BATCH' ? 'batch-reconciler' : 'saga',
+      after: { source },
+    });
   }
 }
 

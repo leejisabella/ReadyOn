@@ -4,8 +4,8 @@ import type { AuditEventSeverity } from './audit-event.store';
  * Closed catalogue of every audit action this service emits. Adding an event
  * means extending this union — callers cannot pass a free-form string.
  *
- * Names match TRD §9 / §11 / §18 verbatim so an audit query against the table
- * is greppable from the spec.
+ * Names match TRD §9.5 verbatim so an audit query against the table is
+ * greppable from the spec.
  */
 export type AuditAction =
   // Saga lifecycle (TRD §9.1–§9.4)
@@ -24,10 +24,8 @@ export type AuditAction =
   | 'PROVISIONAL_PAIR_COALESCED'
   | 'PROVISIONAL_RECONCILIATION_PASS_COMPLETED'
   | 'PROVISIONAL_ACTION_STALE'
-  // Employee bootstrap (TRD §11.2, §11.3)
-  | 'EMPLOYEE_BOOTSTRAPPED'
-  // HR review marker (TRD §14.6, §9.5.5)
-  | 'HR_REVIEW_REQUIRED';
+  // Employee bootstrap (TRD §11.2, §11.3, §11.4)
+  | 'EMPLOYEE_BOOTSTRAPPED';
 
 export const DEFAULT_SEVERITY: Readonly<Record<AuditAction, AuditEventSeverity>> = Object.freeze({
   REQUEST_CREATED: 'INFO',
@@ -43,7 +41,6 @@ export const DEFAULT_SEVERITY: Readonly<Record<AuditAction, AuditEventSeverity>>
   PROVISIONAL_RECONCILIATION_PASS_COMPLETED: 'INFO',
   PROVISIONAL_ACTION_STALE: 'HIGH',
   EMPLOYEE_BOOTSTRAPPED: 'INFO',
-  HR_REVIEW_REQUIRED: 'HIGH',
 });
 
 /**
@@ -54,5 +51,5 @@ export const DEFAULT_SEVERITY: Readonly<Record<AuditAction, AuditEventSeverity>>
 export type AuditEntityType =
   | 'TimeOffRequest'
   | 'ProvisionalAction'
-  | 'Employee'
-  | 'Reconciler';
+  | 'Reconciler'
+  | 'Employee';

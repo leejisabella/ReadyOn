@@ -87,6 +87,47 @@ describe('ProvisionalActionStore', () => {
     });
   });
 
+  describe('query — ProvisionalActionFilter', () => {
+    beforeEach(() => {
+      store.insert(insertArgs({ id: 'pa-A', requestId: 'req-A', invokedBy: 'mgr-1' }));
+      store.insert(insertArgs({ id: 'pa-B', requestId: 'req-A', invokedBy: 'mgr-2' }));
+      store.insert(insertArgs({ id: 'pa-C', requestId: 'req-B', invokedBy: 'mgr-1' }));
+    });
+
+    it('empty filter returns every row in invokedAt order', () => {
+      expect(store.query({}).map((r) => r.id).sort()).toEqual(['pa-A', 'pa-B', 'pa-C']);
+    });
+
+    it('filters by requestId', () => {
+      expect(store.query({ requestId: 'req-A' }).map((r) => r.id).sort()).toEqual(['pa-A', 'pa-B']);
+    });
+
+    it('filters by invokedBy', () => {
+      expect(store.query({ invokedBy: 'mgr-1' }).map((r) => r.id).sort()).toEqual(['pa-A', 'pa-C']);
+    });
+
+    it('ANDs multiple filters together', () => {
+      expect(
+        store.query({ requestId: 'req-A', invokedBy: 'mgr-2' }).map((r) => r.id),
+      ).toEqual(['pa-B']);
+    });
+
+    it('filters by reconciliationState', () => {
+      store.markReconciled({
+        id: 'pa-A',
+        reconciliationState: 'CONFIRMED',
+        reconciledAt: '2026-05-11T14:00:00.000Z',
+        reconciliationDetails: {},
+        snapshotSummary: {},
+        nullifySnapshot: true,
+      });
+      expect(store.query({ reconciliationState: 'CONFIRMED' }).map((r) => r.id)).toEqual(['pa-A']);
+      expect(
+        store.query({ reconciliationState: 'PENDING' }).map((r) => r.id).sort(),
+      ).toEqual(['pa-B', 'pa-C']);
+    });
+  });
+
   describe('markReconciled — five-field allow-list (ADR-022)', () => {
     beforeEach(() => store.insert(insertArgs()));
 

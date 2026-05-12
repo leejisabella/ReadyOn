@@ -292,8 +292,9 @@ describe('MockHcmAdapter (integration via MockHcmTestHarness)', () => {
     });
 
     it('exposes HcmContractViolation as a distinct error class for downstream routing', () => {
-      // smoke check on the imported symbol — contract violations are exercised
-      // via adversarial-mode tests in Slice 15.
+      // Smoke check on the imported symbol. Adversarial modes that exercise
+      // contract violations end-to-end (TRD §17.3) are not yet implemented
+      // in the mock.
       expect(HcmContractViolation).toBeDefined();
     });
   });

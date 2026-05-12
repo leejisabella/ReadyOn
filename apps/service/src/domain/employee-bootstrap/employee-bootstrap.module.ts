@@ -6,7 +6,7 @@ import { EmployeeStore } from './employee.store';
 /**
  * Three-path bootstrap (webhook + lazy-pull + batch). Depends on
  * {@link EmploymentModule} for employment-row insertion. The HCM adapter is
- * a global provider (Slice 7), so no explicit import is needed.
+ * a global provider, so no explicit import is needed.
  *
  * @ref docs/04_Module_Plan.md §3.6
  */

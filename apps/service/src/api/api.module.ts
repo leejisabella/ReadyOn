@@ -4,7 +4,10 @@ import { APP_FILTER } from '@nestjs/core';
 import { GraphQLModule } from '@nestjs/graphql';
 import { BalanceModule } from '../domain/balance/balance.module';
 import { EmploymentModule } from '../domain/employment/employment.module';
-import { HrReviewQueueModule } from '../domain/hr-review-queue/hr-review-queue.module';
+import {
+  HrReviewQueueModule,
+} from '../domain/hr-review-queue/hr-review-queue.module';
+import type { HrReviewQueueOptions } from '../domain/hr-review-queue/hr-review-queue.service';
 import { LeaveTypeAvailabilityModule } from '../domain/leave-type-availability/leave-type-availability.module';
 import { ProvisionalActionModule } from '../domain/provisional-action/provisional-action.module';
 import {
@@ -13,7 +16,10 @@ import {
 } from '../domain/request/request.module';
 import { RequestStore } from '../domain/request/request.store';
 import { ObservabilityModule } from '../infrastructure/observability/observability.module';
-import { ReconciliationModule } from '../infrastructure/reconciliation/reconciliation.module';
+import {
+  ReconciliationModule,
+  type ReconciliationModuleOptions,
+} from '../infrastructure/reconciliation/reconciliation.module';
 import { DomainErrorFilter } from './errors/domain-error.filter';
 import { AdminResolver } from './resolvers/admin.resolver';
 import { BalanceResolver } from './resolvers/balance.resolver';
@@ -28,6 +34,8 @@ import { IsoDateScalar } from './scalars/iso-date.scalar';
 
 export interface ApiModuleOptions {
   readonly request?: RequestModuleOptions;
+  readonly reconciliation?: ReconciliationModuleOptions;
+  readonly hrReviewQueue?: HrReviewQueueOptions;
   /** Path under which the GraphQL schema is generated for inspection. */
   readonly autoSchemaFile?: string | true;
 }
@@ -51,9 +59,9 @@ export class ApiModule {
         EmploymentModule,
         LeaveTypeAvailabilityModule,
         ProvisionalActionModule,
-        HrReviewQueueModule.forRoot(),
+        HrReviewQueueModule.forRoot(options.hrReviewQueue ?? {}),
         RequestModule.forRoot(options.request ?? {}),
-        ReconciliationModule.forRoot(),
+        ReconciliationModule.forRoot(options.reconciliation ?? {}),
         GraphQLModule.forRoot<ApolloDriverConfig>({
           driver: ApolloDriver,
           autoSchemaFile: options.autoSchemaFile ?? true,

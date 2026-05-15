@@ -11,6 +11,7 @@ import { resetSchema } from '../persistence/migrations';
 import { TransactionStore } from '../persistence/transaction.store';
 import { VersionStore } from '../persistence/version.store';
 import { ZodPipe } from '../common/zod.pipe';
+import { ModeStore, type MockHcmMode, type Reachability } from './mode.store';
 
 const SetBalanceSchema = z
   .object({
@@ -138,6 +139,31 @@ const SnapshotSchema = z
  * NOT part of TRD §17.2's public HCM contract — these endpoints exist solely
  * to drive mock state from tests via {@link MockHcmTestHarness}.
  */
+const MODE_VALUES = [
+  'normal',
+  'flaky',
+  'silent_no_op',
+  'wrong_delta',
+  'missing_confirmation',
+  'stale_version',
+  'malformed',
+  'slow',
+  'version_skew',
+] as const;
+
+const SetModeSchema = z
+  .object({
+    mode: z.enum(MODE_VALUES),
+    flakyRate: z.number().min(0).max(1).optional(),
+    slowLatencyMs: z.number().int().min(0).max(60_000).optional(),
+    forceNextCalls: z.number().int().min(0).max(10_000).optional(),
+  })
+  .strict();
+
+const SetReachabilitySchema = z
+  .object({ state: z.enum(['on', 'off']) })
+  .strict();
+
 @Controller('admin')
 export class AdminController {
   constructor(
@@ -148,7 +174,50 @@ export class AdminController {
     private readonly leaveTypes: LeaveTypeStore,
     private readonly transactions: TransactionStore,
     private readonly versions: VersionStore,
+    private readonly modes: ModeStore,
   ) {}
+
+  /**
+   * TRD §17.3 — switch the mock's adversarial mode. `normal` is the default;
+   * non-`normal` modes mutate responses for service-side defensive testing.
+   */
+  @Post('setMode')
+  @HttpCode(204)
+  setMode(@Body(new ZodPipe(SetModeSchema)) body: z.output<typeof SetModeSchema>): void {
+    const update: Partial<{
+      readonly mode: MockHcmMode;
+      readonly flakyRate: number;
+      readonly slowLatencyMs: number;
+      readonly forceNextCalls: number;
+    }> = { mode: body.mode };
+    if (body.flakyRate !== undefined) (update as { flakyRate: number }).flakyRate = body.flakyRate;
+    if (body.slowLatencyMs !== undefined)
+      (update as { slowLatencyMs: number }).slowLatencyMs = body.slowLatencyMs;
+    if (body.forceNextCalls !== undefined)
+      (update as { forceNextCalls: number }).forceNextCalls = body.forceNextCalls;
+    this.modes.set(update);
+  }
+
+  /** TRD §17.3 — full-outage simulation toggle. */
+  @Post('setReachability')
+  @HttpCode(204)
+  setReachability(
+    @Body(new ZodPipe(SetReachabilitySchema)) body: z.output<typeof SetReachabilitySchema>,
+  ): void {
+    this.modes.set({ reachability: body.state as Reachability });
+  }
+
+  @Get('mode')
+  modeState() {
+    const c = this.modes.current();
+    return {
+      mode: c.mode,
+      flakyRate: c.flakyRate,
+      slowLatencyMs: c.slowLatencyMs,
+      forceNextCalls: c.forceNextCalls,
+      reachability: c.reachability,
+    };
+  }
 
   @Post('setBalance')
   @HttpCode(204)
@@ -222,6 +291,7 @@ export class AdminController {
   @HttpCode(204)
   reset(): void {
     resetSchema(this.db);
+    this.modes.reset();
   }
 
   /**

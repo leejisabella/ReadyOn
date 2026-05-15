@@ -36,7 +36,7 @@ export class BreakGlassAuthorizer {
 
   constructor(
     private readonly health: HcmHealthMonitor,
-    @Inject('BREAK_GLASS_OPTIONS') options: BreakGlassAuthorizerOptions = {},
+    @Inject('BREAK_GLASS_OPTIONS') options: BreakGlassAuthorizerOptions,
   ) {
     this.requireRole = options.requireRole ?? 'break_glass_approver';
     this.minOutageMs = options.minOutageMs ?? 60_000;

@@ -199,41 +199,49 @@ export class MockHcmTestHarness {
     await this.request('POST', '/admin/deleteEmployee', { employeeId });
   }
 
-  // ── Mode + reachability (TRD §17.3 surface; not yet implemented) ────────
-  //
-  // The Mock HCM currently runs only in `normal` mode with full reachability.
-  // Adversarial modes (flaky, silent_no_op, stale_version, …) and reachability
-  // toggling are part of TRD §17.3; calls fail fast until the mock grows
-  // support for them.
+  // ── Mode + reachability (TRD §17.3) ─────────────────────────────────────
 
-  async setMode(mode: MockHcmMode): Promise<void> {
-    if (mode !== 'normal') {
-      throw new MockHcmHarnessError(`Adversarial mode '${mode}' is not implemented in the mock.`);
-    }
+  /**
+   * Switch the mock to an adversarial mode (TRD §17.3). Use `forceNextCalls`
+   * for deterministic flaky behaviour in tests; `slowLatencyMs` for the
+   * `slow` mode.
+   */
+  async setMode(
+    mode: MockHcmMode,
+    options: {
+      readonly flakyRate?: number;
+      readonly slowLatencyMs?: number;
+      readonly forceNextCalls?: number;
+    } = {},
+  ): Promise<void> {
+    const body: Record<string, unknown> = { mode };
+    if (options.flakyRate !== undefined) body.flakyRate = options.flakyRate;
+    if (options.slowLatencyMs !== undefined) body.slowLatencyMs = options.slowLatencyMs;
+    if (options.forceNextCalls !== undefined) body.forceNextCalls = options.forceNextCalls;
+    await this.request('POST', '/admin/setMode', body);
   }
 
+  /** Toggle the mock's reachability (TRD §17.3 — `unreachable` mode). */
   async setReachability(state: ReachabilityState): Promise<void> {
-    if (state !== 'on') {
-      throw new MockHcmHarnessError(`Reachability control is not implemented in the mock.`);
-    }
+    await this.request('POST', '/admin/setReachability', { state });
   }
 
-  // ── Event scheduling (TRD §17 — not yet implemented) ────────────────────
-
-  async scheduleBalanceUpdate(): Promise<void> {
-    throw new MockHcmHarnessError('Webhook scheduling is not implemented in the mock.');
-  }
-
-  async scheduleEmploymentChange(): Promise<void> {
-    throw new MockHcmHarnessError('Webhook scheduling is not implemented in the mock.');
-  }
-
-  async scheduleEmployeeCreated(): Promise<void> {
-    throw new MockHcmHarnessError('Webhook scheduling is not implemented in the mock.');
-  }
-
-  async triggerWebhookFlood(): Promise<void> {
-    throw new MockHcmHarnessError('Webhook flood is not implemented in the mock.');
+  /** Current mode + reachability state (for assertions in self-tests). */
+  async getMode(): Promise<{
+    readonly mode: MockHcmMode;
+    readonly reachability: ReachabilityState;
+    readonly flakyRate: number;
+    readonly slowLatencyMs: number;
+    readonly forceNextCalls: number;
+  }> {
+    const res = await this.request('GET', '/admin/mode');
+    return res as {
+      readonly mode: MockHcmMode;
+      readonly reachability: ReachabilityState;
+      readonly flakyRate: number;
+      readonly slowLatencyMs: number;
+      readonly forceNextCalls: number;
+    };
   }
 
   // ── Assertions ──────────────────────────────────────────────────────────

@@ -30,9 +30,14 @@ describe('HoldAccountant', () => {
     });
 
     it('rejects a delta that would push the bucket negative', () => {
-      expect(() =>
-        HoldAccountant.apply(holds({ approved: new Decimal(2) }), 'approved', new Decimal(-3)),
-      ).toThrow(HoldDeltaError);
+      try {
+        HoldAccountant.apply(holds({ approved: new Decimal(2) }), 'approved', new Decimal(-3));
+        throw new Error('expected throw');
+      } catch (err) {
+        expect(err).toBeInstanceOf(HoldDeltaError);
+        expect((err as Error).name).toBe('HoldDeltaError');
+        expect((err as Error).message).toMatch(/bucket 'approved' cannot go negative.*current=2.*delta=-3/);
+      }
     });
 
     it('does not mutate the input', () => {
@@ -54,16 +59,26 @@ describe('HoldAccountant', () => {
       expect(result.approved.toFixed()).toBe('2');
     });
 
-    it('rejects when source and destination are the same bucket', () => {
+    it('rejects when source and destination are the same bucket (even if the bucket has enough units)', () => {
+      // pending=10 so the *alternative* path (subtract then add) would succeed
+      // if the guard were ever skipped; the rejection must be the guard itself.
       expect(() =>
-        HoldAccountant.promote(holds(), 'pending', 'pending', new Decimal(1)),
-      ).toThrow(HoldDeltaError);
+        HoldAccountant.promote(holds({ pending: new Decimal(10) }), 'pending', 'pending', new Decimal(1)),
+      ).toThrow(/promote: source and destination must differ \('pending'\)/);
     });
 
-    it('rejects negative units', () => {
+    it('rejects negative units (even if both buckets have enough to absorb the swap)', () => {
+      // both buckets prefunded so the *alternative* path (apply +units to source,
+      // -units to dest) would not trip the non-negative invariant; the guard
+      // must be the only thing rejecting.
       expect(() =>
-        HoldAccountant.promote(holds(), 'pending', 'approved', new Decimal(-1)),
-      ).toThrow(HoldDeltaError);
+        HoldAccountant.promote(
+          holds({ pending: new Decimal(5), approved: new Decimal(5) }),
+          'pending',
+          'approved',
+          new Decimal(-1),
+        ),
+      ).toThrow(/promote: units must be non-negative \(got -1\)/);
     });
 
     it('throws atomically when the source bucket lacks enough units (no partial write)', () => {

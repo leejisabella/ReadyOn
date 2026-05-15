@@ -297,5 +297,26 @@ describe('MockHcmAdapter (integration via MockHcmTestHarness)', () => {
       // in the mock.
       expect(HcmContractViolation).toBeDefined();
     });
+
+    it('labels socket failures as `network failure` (not timeout)', async () => {
+      const offline = new MockHcmAdapter(
+        { baseUrl: 'http://127.0.0.1:1', timeoutMs: 2_000 },
+        new HcmHealthMonitor({ unhealthyAfterFailures: 100 }),
+      );
+      await expect(offline.fetchEmployee('emp-1')).rejects.toBeInstanceOf(HcmTransientError);
+      await expect(offline.fetchEmployee('emp-1')).rejects.toThrow(/network failure/);
+      await expect(offline.fetchEmployee('emp-1')).rejects.not.toThrow(/timeout/);
+    });
+
+    it('strips a trailing slash from baseUrl so paths join cleanly', async () => {
+      // Both adapters should hit the same URL whether or not the operator
+      // included a trailing slash in their config.
+      const withSlash = new MockHcmAdapter(
+        { baseUrl: `${harness.baseUrl}/`, timeoutMs: 5_000 },
+        new HcmHealthMonitor({ unhealthyAfterFailures: 100 }),
+      );
+      const result = await withSlash.fetchEmployee('emp-1');
+      expect(result.employeeId).toBe('emp-1');
+    });
   });
 });

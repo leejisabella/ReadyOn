@@ -181,7 +181,7 @@ export class HrReviewQueueService {
   constructor(
     @Inject(DATABASE) db: Database,
     provisionalActions: ProvisionalActionStore,
-    @Inject('HR_REVIEW_QUEUE_OPTIONS') options: HrReviewQueueOptions = {},
+    @Inject('HR_REVIEW_QUEUE_OPTIONS') options: HrReviewQueueOptions,
   ) {
     this.db = db;
     this.provisionalActions = provisionalActions;

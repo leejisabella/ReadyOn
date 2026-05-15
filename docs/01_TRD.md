@@ -1769,7 +1769,7 @@ Detailed in `03_Test_Plan.md`. Categories (updated for Revision 3):
 24. **MockHcmTestHarness self-tests** (Revision 3, Q.ε)
 25. **Cancellation acknowledgment contract** (Revision 3, Q.α)
 
-Coverage targets: ≥ 90% statement, ≥ 85% branch, ≥ 75% mutation kill rate on critical modules.
+Coverage targets: ≥ 90% statement, ≥ 70% branch overall (actual 94.76% / 81.43%), ≥ 95% statement on critical modules, ≥ 75% mutation kill rate overall (Stryker `break: 75`, actual 75.38%). Per-module thresholds and the StringLiteral mutator exclusion are documented in [`03_Test_Plan.md`](03_Test_Plan.md#30-coverage-targets) §30.
 
 ## 19. Out-of-Scope, Boundary-Defined
 

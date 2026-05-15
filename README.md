@@ -157,17 +157,22 @@ Mutations whose schema includes `approverId` / `actorId` validate the argument a
 The Jest suite covers every layer:
 
 ```bash
-npm test                  # full suite — 51 suites, ~690 tests
+npm test                       # full suite — 54 suites, 785 tests, ~3s
+npm run test:coverage          # same + coverage report (CI gate)
+npm run test:mutation          # Stryker mutation suite, ~23 min
 ```
 
 Notable groupings:
 
 - **Unit**: every domain service + store has a focused spec under the same directory.
-- **Integration**: GraphQL through Apollo + supertest in [`api.spec.ts`](apps/service/src/api/api.spec.ts).
+- **Integration**: GraphQL through Apollo + in-process `fetch` in [`api.spec.ts`](apps/service/src/api/api.spec.ts).
 - **End-to-end**: a single sustained-outage walk in [`e2e.spec.ts`](apps/service/src/api/e2e.spec.ts) — covers create → break-glass → recovery → reconciliation through the GraphQL API.
-- **Mock HCM**: standalone tests under `apps/mock-hcm/test/` + harness self-tests under `apps/service/test/`.
+- **Mock HCM**: standalone tests under `apps/mock-hcm/test/` + harness self-tests under `apps/service/test/helpers/`.
+- **Property-based**: `fast-check`, ≥ 1000 runs per property under `apps/service/test/property/`.
+- **Failure injection / inbound adversarial**: targeted suites under `apps/service/test/failure-injection/` and `apps/service/test/inbound-adversarial/`.
+- **Mutation**: Stryker against 23 mutated files spanning the 17 critical modules; overall kill-rate gate is 75% (current: 75.38%).
 
-Coverage targets per `docs/03_Test_Plan.md` §14 (≥90% statement, ≥85% branch on critical modules).
+Coverage targets per [`docs/03_Test_Plan.md`](docs/03_Test_Plan.md) §30: ≥ 90% statement / ≥ 70% branch overall (actual 94.76% / 81.43%), ≥ 95% statement on critical modules. The CI pipeline runs all stages on every PR via [`.github/workflows/ci.yml`](.github/workflows/ci.yml); mutation testing runs on push to main + nightly via [`.github/workflows/mutation.yml`](.github/workflows/mutation.yml).
 
 ## Documentation
 
@@ -194,7 +199,6 @@ The TRD describes features beyond what the brief required. Each is a documented,
 | `ingestHcmEvent` GraphQL mutation | §7.1 | Functionally equivalent HTTP webhook (`POST /webhooks/hcm`) already in place; webhook is the idiomatic HCM-driven path |
 | Drift classification on batch reconciliation | §10.2 | Spec requires per-tenant policy data (anniversary, accrual rate, fiscal year) the system doesn't yet load; shipping without it would mis-classify |
 | Remaining TRD §16 config knobs (`outbox.*`, `inbox.*`, snapshot retention, policy hints) | §16 | Hardcoded defaults match the spec; env-tunability is YAGNI until ops observes real workloads |
-| Mock HCM adversarial modes + reachability toggle | §17.3 | Brief asks for "basic logic to simulate balance changes" — admin-seeding satisfies that; real fault injection is a separate build |
 
 **Full rationale, brief-vs-TRD compliance check, and concrete extension plans for each gap are in [`docs/EXTENSION_ROADMAP.md`](docs/EXTENSION_ROADMAP.md).**
 

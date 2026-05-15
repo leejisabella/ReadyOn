@@ -231,6 +231,58 @@ describe('RequestService (saga, normal path)', () => {
       ).rejects.toMatchObject({ code: 'LEAVE_TYPE_NOT_AVAILABLE' });
     });
 
+    // ── parseAndValidateInput coverage (TRD §14.6, INVALID_DATES code) ───
+    // Format-shape rejections (ISO_DATE_RE fails). Calendar-valid but bad
+    // strings like "2025-13-01" pass the regex and are then caught downstream
+    // by canonical-serializer's date parser, which is a different layer.
+    it.each(['', 'not-a-date', '2025/01/15', '2025-1-1'])(
+      'throws INVALID_DATES when startDate is malformed: %p',
+      async (startDate) => {
+        await expect(
+          ctx.request.create(createInput({ startDate }), actor('emp-1'), `idem-start-${startDate}`),
+        ).rejects.toMatchObject({ code: 'INVALID_DATES' });
+      },
+    );
+
+    it.each(['', 'not-a-date', '2025/01/15', '2025-1-1'])(
+      'throws INVALID_DATES when endDate is malformed: %p',
+      async (endDate) => {
+        await expect(
+          ctx.request.create(createInput({ endDate }), actor('emp-1'), `idem-end-${endDate}`),
+        ).rejects.toMatchObject({ code: 'INVALID_DATES' });
+      },
+    );
+
+    it('throws INVALID_DATES when endDate is strictly before startDate', async () => {
+      await expect(
+        ctx.request.create(
+          createInput({ startDate: '2026-05-20', endDate: '2026-05-19' }),
+          actor('emp-1'),
+          'idem-rev',
+        ),
+      ).rejects.toMatchObject({ code: 'INVALID_DATES' });
+    });
+
+    it('accepts a single-day request (startDate === endDate)', async () => {
+      const result = await ctx.request.create(
+        createInput({ startDate: '2026-05-20', endDate: '2026-05-20', units: new Decimal('1') }),
+        actor('emp-1'),
+        'idem-single-day',
+      );
+      expect(result.state).toBe('PENDING_APPROVAL');
+      expect(result.startDate).toBe('2026-05-20');
+      expect(result.endDate).toBe('2026-05-20');
+    });
+
+    it.each([new Decimal('0'), new Decimal('-1'), new Decimal('-0.5')])(
+      'throws INVALID_DATES when units is non-positive: %p',
+      async (units) => {
+        await expect(
+          ctx.request.create(createInput({ units }), actor('emp-1'), `idem-units-${units.toString()}`),
+        ).rejects.toMatchObject({ code: 'INVALID_DATES' });
+      },
+    );
+
     it('throws EMPLOYEE_NOT_BOOTSTRAPPED when HCM has no record and lazy-pull 404s', async () => {
       // wipe service-side employee + drop the mock so lazy-pull 404s
       ctx.resetServiceDb();

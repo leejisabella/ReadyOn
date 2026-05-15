@@ -34,7 +34,7 @@ export class DriftSweep {
   constructor(
     private readonly balance: BalanceService,
     private readonly scheduler: PointReadScheduler,
-    @Inject('DRIFT_SWEEP_OPTIONS') options: DriftSweepOptions = {},
+    @Inject('DRIFT_SWEEP_OPTIONS') options: DriftSweepOptions,
   ) {
     this.staleAfterMs = options.staleAfterMs ?? 5 * 60_000;
     this.perTickLimit = options.perTickLimit ?? 1000;

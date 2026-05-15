@@ -43,8 +43,11 @@ interface Ctx {
   cleanup(): Promise<void>;
 }
 
-// Month is 0-indexed in Date.UTC: 4 = May. Tests run on 2026-05-11.
-let nowMs = Date.UTC(2026, 4, 11, 12, 0, 0);
+// The reconciler is driven by `now()`; the saga uses real wall clock for
+// `invokedAt`. To keep the [invokedAt - historyQueryWindow, now()] window
+// containing the seeded transactions, we anchor `nowMs` to real time at boot
+// (re-evaluated per test via beforeEach below).
+let nowMs = Date.now();
 const setNow = (ms: number): void => {
   nowMs = ms;
 };
@@ -186,7 +189,10 @@ describe('ProvisionalReconciler', () => {
   });
 
   beforeEach(async () => {
-    setNow(Date.UTC(2026, 4, 11, 12, 0, 0));
+    // Anchor to real-time so saga's `new Date().toISOString()` (wall clock)
+    // and the reconciler's `now()` (mocked) stay aligned for the
+    // history-query window.
+    setNow(Date.now());
     ctx.health.resetForTest();
     ctx.resetServiceDb();
     await ctx.harness.reset();
@@ -427,6 +433,57 @@ describe('ProvisionalReconciler', () => {
     // action is no longer pending so a second tick wouldn't emit. We assert the action
     // was touched and the snapshot reflects either outcome.
     expect(['CONFIRMED', 'PENDING']).toContain(action.reconciliationState);
+  });
+
+  it('§9.5.6 stale alert dedups within the window, then re-emits after the window expires', async () => {
+    // Keep the action PENDING by making HCM unreachable so reconciliation
+    // cannot complete; this isolates the stale-alert path.
+    const { provisionalActionId } = await seedScenario(ctx);
+    await ctx.harness.setReachability('off');
+
+    // Age the action past the 4h staleAfterMs threshold.
+    setNow(now() + 5 * 60 * 60 * 1000);
+    const first = await ctx.reconciler.tick();
+    expect(first.staleAlertsEmitted).toBe(1);
+    const firstAlertedAt = ctx.actions.find(provisionalActionId)!.lastStaleAlertAt;
+    expect(firstAlertedAt).not.toBeNull();
+
+    // Immediate re-tick: still within the dedup window (lastAlerted > cutoff).
+    const second = await ctx.reconciler.tick();
+    expect(second.staleAlertsEmitted).toBe(0);
+    expect(ctx.actions.find(provisionalActionId)!.lastStaleAlertAt).toBe(firstAlertedAt);
+
+    // Advance past another staleAfterMs window so lastAlerted is now older
+    // than `now - staleAfterMs`. Dedup should release; the alert re-emits.
+    setNow(now() + 5 * 60 * 60 * 1000);
+    const third = await ctx.reconciler.tick();
+    expect(third.staleAlertsEmitted).toBe(1);
+    expect(ctx.actions.find(provisionalActionId)!.lastStaleAlertAt).not.toBe(firstAlertedAt);
+  });
+
+  it('lease expiresAt is `now + leaseTtlMs` so a future tick can reclaim a stuck lease', async () => {
+    // We can't directly observe the lease row's expiresAt via the public
+    // surface, but the lease store does: query it after a tick and verify the
+    // expiry math matches the configured TTL.
+    await ctx.reconciler.tick();
+    const lease = ctx.db
+      .prepare('SELECT acquired_at, expires_at FROM reconciler_lease WHERE id = ?')
+      .get('provisional') as { acquired_at: string | null; expires_at: string | null };
+    if (lease.acquired_at && lease.expires_at) {
+      const gap = Date.parse(lease.expires_at) - Date.parse(lease.acquired_at);
+      // leaseTtlMs is configured to 60_000 ms above in buildContext.
+      expect(gap).toBe(60_000);
+    }
+  });
+
+  it('skips the audit emit when `inspected === 0` (nothing to reconcile this tick)', async () => {
+    // No actions seeded — the reconciler should acquire the lease, see 0
+    // pending actions, and NOT emit PROVISIONAL_RECONCILIATION_PASS_COMPLETED.
+    await ctx.reconciler.tick();
+    const audits = ctx.audit
+      .findByEntity('Reconciler', 'test-worker')
+      .filter((a) => a.action === 'PROVISIONAL_RECONCILIATION_PASS_COMPLETED');
+    expect(audits).toHaveLength(0);
   });
 
   // ── PROVISIONAL_CANCELLATION end-to-end (TRD §9.5.4) ───────────────────

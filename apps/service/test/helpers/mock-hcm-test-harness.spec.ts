@@ -1,7 +1,6 @@
 import Decimal from 'decimal.js';
 import {
   MockHcmHarnessAssertionError,
-  MockHcmHarnessError,
   MockHcmTestHarness,
 } from './mock-hcm-test-harness';
 
@@ -177,33 +176,62 @@ describe('MockHcmTestHarness (Layer 24)', () => {
     });
   });
 
-  // ── Mode + reachability stubs (TRD §17.3 — not yet implemented) ─────────
+  // ── Mode + reachability (TRD §17.3 — full coverage) ─────────────────────
 
   describe('mode + reachability', () => {
-    it('setMode("normal") is a no-op', async () => {
-      await expect(harness.setMode('normal')).resolves.toBeUndefined();
+    afterEach(async () => {
+      await harness.setMode('normal');
+      await harness.setReachability('on');
     });
 
-    it('setMode("flaky") throws — adversarial modes are not yet implemented', async () => {
-      await expect(harness.setMode('flaky')).rejects.toThrow(MockHcmHarnessError);
+    it('T-HRN-03 — setMode("normal") is the harness default', async () => {
+      await harness.setMode('normal');
+      const state = await harness.getMode();
+      expect(state.mode).toBe('normal');
     });
 
-    it('setReachability("on") is a no-op', async () => {
-      await expect(harness.setReachability('on')).resolves.toBeUndefined();
+    it('T-HRN-03b — setMode("flaky", { flakyRate, forceNextCalls }) configures the store', async () => {
+      await harness.setMode('flaky', { flakyRate: 0.75, forceNextCalls: 3 });
+      const state = await harness.getMode();
+      expect(state.mode).toBe('flaky');
+      expect(state.flakyRate).toBe(0.75);
+      expect(state.forceNextCalls).toBe(3);
     });
 
-    it('setReachability("off") throws — reachability control is not yet implemented', async () => {
-      await expect(harness.setReachability('off')).rejects.toThrow(MockHcmHarnessError);
+    it('T-HRN-03c — every adversarial mode is accepted', async () => {
+      const modes = [
+        'silent_no_op',
+        'wrong_delta',
+        'missing_confirmation',
+        'stale_version',
+        'malformed',
+        'slow',
+        'version_skew',
+      ] as const;
+      for (const m of modes) {
+        await harness.setMode(m);
+        expect((await harness.getMode()).mode).toBe(m);
+      }
     });
-  });
 
-  describe('scheduling stubs', () => {
-    it.each(['scheduleBalanceUpdate', 'scheduleEmploymentChange', 'scheduleEmployeeCreated', 'triggerWebhookFlood'] as const)(
-      '%s throws MockHcmHarnessError until webhooks ship',
-      async (method) => {
-        await expect(harness[method]()).rejects.toThrow(MockHcmHarnessError);
-      },
-    );
+    it('T-HRN-04 — setReachability("on") is the default', async () => {
+      await harness.setReachability('on');
+      expect((await harness.getMode()).reachability).toBe('on');
+    });
+
+    it('T-HRN-04b — setReachability("off") flips the gate', async () => {
+      await harness.setReachability('off');
+      expect((await harness.getMode()).reachability).toBe('off');
+    });
+
+    it('T-HRN-04c — reset() restores defaults (normal + on)', async () => {
+      await harness.setMode('flaky', { flakyRate: 1 });
+      await harness.setReachability('off');
+      await harness.reset();
+      const state = await harness.getMode();
+      expect(state.mode).toBe('normal');
+      expect(state.reachability).toBe('on');
+    });
   });
 
   // ── Assertions (T-HRN-06, T-HRN-07) ─────────────────────────────────────

@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Headers,
+  HttpCode,
   Param,
   Post,
   Res,
@@ -65,21 +66,21 @@ export class BalancesController {
   }
 
   @Post('reserve')
+  @HttpCode(200)
   reserve(
     @Body(new ZodPipe(MutationBodySchema)) body: z.output<typeof MutationBodySchema>,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
-    @Res() res: Response,
-  ): void {
-    this.dispatch('reserve', body, idempotencyKey, res);
+  ) {
+    return this.dispatch('reserve', body, idempotencyKey);
   }
 
   @Post('release')
+  @HttpCode(200)
   release(
     @Body(new ZodPipe(MutationBodySchema)) body: z.output<typeof MutationBodySchema>,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
-    @Res() res: Response,
-  ): void {
-    this.dispatch('release', body, idempotencyKey, res);
+  ) {
+    return this.dispatch('release', body, idempotencyKey);
   }
 
   /**
@@ -108,8 +109,7 @@ export class BalancesController {
     op: 'reserve' | 'release',
     body: z.output<typeof MutationBodySchema>,
     idempotencyKey: string | undefined,
-    res: Response,
-  ): void {
+  ): unknown {
     if (!idempotencyKey) {
       throw new HcmHttpError(
         400,
@@ -127,6 +127,11 @@ export class BalancesController {
       op === 'reserve'
         ? this.service.reserve({ ...body, units, idempotencyKey })
         : this.service.release({ ...body, units, idempotencyKey });
-    res.status(outcome.statusCode).json(outcome.body);
+    if (outcome.kind === 'REJECTED') {
+      // Surface as HcmHttpError so Nest's exception filter renders the
+      // canonical `{error, message}` shape with the correct status.
+      throw new HcmHttpError(outcome.statusCode, outcome.body.error, outcome.body.message);
+    }
+    return outcome.body;
   }
 }

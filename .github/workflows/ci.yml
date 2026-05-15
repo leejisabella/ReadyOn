@@ -1,0 +1,92 @@
+# Stages 1-8 of the 9-stage pipeline documented in
+# `Test Cases and Proof of Coverage`, CI Pipeline section. Each step is a
+# gate: the next does not run until the previous passes.
+#
+# Stage 9 (mutation testing on critical modules) lives in `mutation.yml` and
+# runs on push to main + nightly per the doc's "Merge to main" cadence.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test pipeline (Stages 1-8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # ── Stage 1 ──────────────────────────────────────────────────────────
+      - name: '1. Typecheck'
+        run: npm run typecheck
+
+      # ── Stage 2 — Layer 1: Unit tests ────────────────────────────────────
+      # Pure unit tests under apps/**/src and libs/**/src; excludes anything
+      # that loads the Mock HCM harness or the property/failure/adversarial
+      # test directories (those are gated by later stages).
+      - name: '2. Unit (Layer 1)'
+        run: |
+          npx jest \
+            --testPathIgnorePatterns='/node_modules/' \
+            --testPathIgnorePatterns='apps/service/test/(property|failure-injection|inbound-adversarial|helpers)/' \
+            --testPathIgnorePatterns='apps/service/src/api/e2e\.spec\.ts$' \
+            --testPathIgnorePatterns='apps/service/src/api/api\.spec\.ts$' \
+            --testPathIgnorePatterns='apps/service/src/infrastructure/(outbox|inbox|reconciliation/(batch-reconciliation|provisional-reconciler|drift-sweep))\.?(service)?\.spec\.ts$' \
+            --testPathIgnorePatterns='apps/service/src/infrastructure/hcm/mock-hcm\.adapter\.spec\.ts$' \
+            --testPathIgnorePatterns='apps/service/src/domain/request/request\.service\.spec\.ts$' \
+            --testPathIgnorePatterns='apps/service/src/domain/hr-review-queue/hr-review-queue\.service\.spec\.ts$' \
+            --testPathIgnorePatterns='apps/mock-hcm/(src|test)/'
+
+      # ── Stage 3 — Layer 2: Integration ──────────────────────────────────
+      - name: '3. Integration (Layer 2)'
+        run: npx jest --testPathPattern='\.integration\.spec\.ts$'
+
+      # ── Stage 4 — Layer 17: Mock HCM internal ───────────────────────────
+      # Runs first among harness-touching layers so a broken mock fails
+      # before higher layers obscure the signal.
+      - name: '4. Mock HCM internal (Layer 17)'
+        run: npx jest --testPathPattern='apps/mock-hcm/src/.*\.spec\.ts$'
+
+      # ── Stage 5 — Layer 24: MockHcmTestHarness self-tests ───────────────
+      - name: '5. MockHcmTestHarness self-tests (Layer 24)'
+        run: npx jest --testPathPattern='apps/service/test/helpers/'
+
+      # ── Stage 6 — Layer 4: Property-based ───────────────────────────────
+      # fast-check: 1000+ runs per property per properties.spec.ts.
+      - name: '6. Property-based (Layer 4)'
+        run: npx jest --testPathPattern='apps/service/test/property/'
+
+      # ── Stage 7 — Rev 3.1 + adversarial layers (5, 6, 21, 22, 23, 25) ──
+      # Layer 21 (provisional reconciler) hosts Layer 23 (pair-coalescing)
+      # as a subset; Layer 25 (cancellation ack) lives inside request.service.
+      # Layers 5 (outbound failure injection) and 6 (inbound adversarial)
+      # belong here because they also exercise specific failure modes.
+      - name: '7. Rev 3.1 + adversarial layers (5, 6, 21, 22, 23, 25)'
+        run: |
+          npx jest --testPathPattern='(provisional-reconciler|hr-review-queue\.service|request\.service|test/failure-injection|test/inbound-adversarial|outbox-worker|batch-reconciliation|drift-sweep|inbox-processor|mock-hcm\.adapter)\.spec\.ts$'
+
+      # ── Stage 8 — Layer 3: E2E + full coverage gate ─────────────────────
+      # The end-to-end walkthrough plus the full suite with --coverage so
+      # the thresholds in jest.config.ts are enforced against the union of
+      # every layer's coverage contribution. Aggregating coverage in any
+      # earlier stage would under-count critical modules whose only
+      # exercise comes from integration- or E2E-flavored tests.
+      - name: '8. E2E (Layer 3) + coverage gates'
+        run: npm run test:coverage

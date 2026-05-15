@@ -1,0 +1,54 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "Layer 9 — Mutation testing. TRD §11 / Mini Tests §4. Targets the 16 critical modules; ≥75% kill rate required. Run on merge-to-main and nightly per Test Plan §26 stage 9; not in the every-commit fast-feedback loop because a full mutation run is 30-90 minutes.",
+  "packageManager": "npm",
+  "testRunner": "jest",
+  "jest": {
+    "projectType": "custom",
+    "configFile": "jest.stryker.config.js",
+    "enableFindRelatedTests": false
+  },
+  "reporters": ["progress", "clear-text", "html", "json"],
+  "coverageAnalysis": "perTest",
+  "concurrency": 1,
+  "timeoutMS": 180000,
+  "checkers": ["typescript"],
+  "tsconfigFile": "tsconfig.json",
+  "disableTypeChecks": false,
+  "_mutator_comment": "Excluding StringLiteral: TRD specifies error codes, payload shape, and observable behaviour but never exact wording of audit/log/error message text. Keeping the mutator on would gate the build on cosmetic text changes that no consumer of this system depends on.",
+  "mutator": {
+    "excludedMutations": ["StringLiteral"]
+  },
+  "mutate": [
+    "apps/service/src/domain/balance/balance.service.ts",
+    "apps/service/src/domain/balance/balance.store.ts",
+    "apps/service/src/domain/balance/hold-accountant.ts",
+    "apps/service/src/domain/break-glass/break-glass.authorizer.ts",
+    "apps/service/src/domain/employee-bootstrap/employee-bootstrap.service.ts",
+    "apps/service/src/domain/employment/employment.service.ts",
+    "apps/service/src/domain/employment/employment.store.ts",
+    "apps/service/src/domain/hr-review-queue/hr-review-queue.service.ts",
+    "apps/service/src/domain/idempotency/idempotency.service.ts",
+    "apps/service/src/domain/idempotency/idempotency.store.ts",
+    "apps/service/src/domain/provisional-action/provisional-action.store.ts",
+    "apps/service/src/domain/request/request.service.ts",
+    "apps/service/src/domain/request/request-state-machine.ts",
+    "apps/service/src/domain/request/request.store.ts",
+    "apps/service/src/infrastructure/hcm/hcm-health.monitor.ts",
+    "apps/service/src/infrastructure/hcm/mock-hcm.adapter.ts",
+    "apps/service/src/infrastructure/outbox/outbox-worker.service.ts",
+    "apps/service/src/infrastructure/reconciliation/provisional-reconciler.service.ts",
+    "apps/service/src/infrastructure/reconciliation/reconciler-lease.store.ts",
+    "apps/service/src/infrastructure/reconciliation/reconciliation-step.store.ts",
+    "apps/service/src/infrastructure/reconciliation/batch-reconciliation.service.ts",
+    "libs/decimal-scalar/src/canonical-serializer.ts",
+    "libs/decimal-scalar/src/decimal-codec.ts"
+  ],
+  "ignorePatterns": ["dist", "coverage", "reports", ".stryker-tmp"],
+  "thresholds": {
+    "high": 90,
+    "low": 75,
+    "break": 75
+  },
+  "_integration_note_comment": "Stryker runs end-to-end with the jest-runner and per-test coverage analysis. Configs requiring NestJS DI use jest.stryker.config.js as a CJS shim (the jest-runner's child process can't load jest.config.ts). Mutation tests run on merge-to-main and nightly per Test Plan §26 stage 9 — not in the every-commit fast path because a full pass is 30-90 minutes."
+}

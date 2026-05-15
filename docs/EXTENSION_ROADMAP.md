@@ -11,9 +11,8 @@ This document is the authoritative record of every TRD-specified feature that is
 | 1 | `ingestHcmEvent` GraphQL mutation | §7.1 | No — brief says "REST (or GraphQL) endpoints," doesn't dictate names | ~30 min | Functional equivalent shipped (HTTP webhook) |
 | 2 | Drift classification on batch reconciliation | §10.2 | No — brief requires *handling* anniversary/year-refresh (done), not *classifying* drift | ~½ day after policy data lands | Deferred behind policy-config dependency |
 | 3 | Remaining TRD §16 config knobs (`outbox.*`, `inbox.*`, retention, policy hints) | §16 | No — brief doesn't enumerate config surface | ~½ day | Deferred — current defaults are correct |
-| 4 | Mock HCM adversarial modes + reachability toggle | §17.3 | No — brief asks for "basic logic to simulate balance changes" | ~2 days | Deferred — admin seeding + harness covers brief |
 
-None of the four are required by the brief. All four are reasonable future extensions; each is documented at runbook-level so an operator can spot the gap before assuming the spec'd behaviour.
+None of the three are required by the brief. All three are reasonable future extensions; each is documented at runbook-level so an operator can spot the gap before assuming the spec'd behaviour.
 
 ---
 
@@ -246,100 +245,11 @@ The schedulers for `driftSweepIntervalMs` / `fullBatchIntervalMs` / `provisional
 
 ---
 
-## Flag 4 — Mock HCM adversarial modes + reachability toggle (TRD §17.3)
-
-### What the TRD specs
-
-The Mock HCM should support a `setMode(mode)` admin endpoint that switches its response behaviour:
-
-| Mode | Behaviour |
-| --- | --- |
-| `normal` | Honest (default) |
-| `flaky` | Random 5xx and timeouts at a configurable rate |
-| `silent_no_op` | `200 OK` with `deltaApplied = 0` (correctness trap — adapter must catch via ADR-005 `deltaApplied` check) |
-| `wrong_delta` | `200 OK` with `deltaApplied != requested` |
-| `missing_confirmation` | `200 OK` with required ADR-005 fields omitted |
-| `stale_version` | `200 OK` with `hcmVersion ≤ current` |
-| `malformed` | Garbage JSON / wrong shape (adapter must throw `HcmContractViolation`) |
-| `slow` | Adds configurable latency (timeout enforcement test) |
-
-Plus a `setReachability(state)` toggle for full-outage simulation.
-
-### What the brief required
-
-> "Create mock endpoints (you may want to deploy real mock servers for them with some basic logic to simulate balance changes)."
-
-"Basic logic to simulate balance changes" — satisfied by our admin endpoints (`/admin/setBalance`, `/admin/setEmployment`, `/admin/setLeaveTypeAvailability`, `/admin/seedTransaction`, `/admin/deleteEmployee`, `/admin/reset`). The brief doesn't ask for fault injection.
-
-### What we built
-
-The mock runs in **honest `normal` mode only**. The `MockHcmTestHarness` exposes `setMode` / `setReachability` / webhook-scheduling methods that throw `MockHcmHarnessError` with a clear "not implemented in the mock" message when called with a non-trivial argument:
-
-```ts
-async setMode(mode: MockHcmMode): Promise<void> {
-  if (mode !== 'normal') {
-    throw new MockHcmHarnessError(`Adversarial mode '${mode}' is not implemented in the mock.`);
-  }
-}
-```
-
-Tests that need adversarial scenarios (HCM rejection, EMPLOYEE_NOT_FOUND, mismatched delta) achieve them by **seeding** the mock's underlying state directly — e.g., setting an absurd balance so `reserveBalance` returns `INSUFFICIENT_BALANCE`, or planting a transaction with a wrong delta for the history-mismatch test. These cover the same code paths the adversarial modes would, just at a different test seam.
-
-### Why we deferred
-
-Three reasons:
-
-1. **The brief doesn't ask for it.** The brief asks for "basic logic" — admin seeding meets that bar.
-2. **The relevant defensive code is already covered.** The HCM adapter's zod-validation path is exercised by [`mock-hcm.adapter.spec.ts`](../apps/service/src/infrastructure/hcm/mock-hcm.adapter.spec.ts) and the canonical-input serializer tests. Adversarial modes would re-exercise the same code paths — they'd add depth to the test surface (genuine fault injection vs. unit-test stubbing) but not coverage of new code.
-3. **It's a real build, not a refactor.** A working adversarial-mode system needs: a mode controller in the mock; a request-interceptor that mutates the response per mode; a flaky-mode RNG with configurable rates; a slow-mode timer; a stale_version state tracker. Then the harness has to surface deterministic toggles for tests (not just "be flaky" but "be flaky for the next N calls"). That's a full slice on its own.
-
-### How to add it
-
-A clean implementation, split across two phases:
-
-**Phase A — Reachability + slow + malformed (the "simulate outage" subset, ~½ day).**
-
-These are the modes the existing test suite would benefit from most.
-
-1. Add a `ModeStore` in `apps/mock-hcm/src/persistence/` holding `{ mode, reachability }` in-memory.
-2. Add admin endpoints:
-   ```ts
-   POST /admin/setMode         { mode: MockHcmMode }
-   POST /admin/setReachability { state: 'on' | 'off' }
-   ```
-3. Add a NestJS interceptor `AdversarialModeInterceptor` on every API route that consults `ModeStore`:
-   - `reachability = 'off'` → return `503` without touching DB
-   - `mode = 'slow'` → `await setTimeout(latencyMs)` before the handler
-   - `mode = 'malformed'` → return `res.send('}{not json')` after the handler
-4. Wire the harness `setMode` / `setReachability` to actually `POST /admin/setMode` etc., remove the stubs.
-5. Add tests: one per mode showing the adapter's defensive layer catches it correctly (e.g., `slow` triggers timeout, `malformed` throws `HcmContractViolation`, `off` triggers `HcmTransientError`).
-
-**Phase B — Correctness traps: `silent_no_op` / `wrong_delta` / `missing_confirmation` / `stale_version` / `flaky` (~1 day).**
-
-These need response mutation rather than just rejection. The interceptor pattern extends:
-
-- For mutation endpoints, the interceptor wraps the handler's response and tweaks specific fields per mode.
-- `flaky` needs a configurable rate (`POST /admin/setMode { mode: 'flaky', failureRate: 0.5 }`) and a deterministic test mode where the next N calls fail (so tests aren't flaky themselves).
-- Each mode gets a paired adapter test confirming the right defensive layer fires:
-  - `silent_no_op` → adapter detects `deltaApplied = 0` → throws `HcmContractViolation`
-  - `wrong_delta` → adapter detects mismatch → audit `HCM_RESPONSE_INVALID` (a code that already exists)
-  - `missing_confirmation` → zod rejects the response → `HcmContractViolation`
-  - `stale_version` → applyHcmUpdate skips the row (`hcmVersion` not newer)
-
-### Estimated effort
-
-- Phase A alone: ~½ day, ships meaningful E2E outage scenarios.
-- Both phases: ~1.5 – 2 days.
-
-The brief explicitly says "agentic development; do not write even a single line of code." If a future test cycle wants real fault injection beyond the admin-seed approach, Phase A is the high-value chunk.
-
----
-
 ## Closing thoughts
 
 Every gap in this file is a **documented choice**, not an oversight. The default in each case ("don't ship") was driven by one of:
 
-- "Brief doesn't ask for it" (Flag 1, 4)
+- "Brief doesn't ask for it" (Flag 1)
 - "Spec needs prerequisite data we don't load yet" (Flag 2)
 - "Knob is correctly defaulted and env-tunability is YAGNI without observed need" (Flag 3)
 

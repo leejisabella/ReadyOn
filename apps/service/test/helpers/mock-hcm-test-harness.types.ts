@@ -16,7 +16,7 @@ export interface MockHcmTestHarnessOptions {
   readonly dbPath?: string;
 }
 
-// ─── Mode + reachability (TRD §17.3 — not yet implemented in the mock) ────
+// ─── Mode + reachability (TRD §17.3) ─────────────────────────────────────
 
 export type MockHcmMode =
   | 'normal'
@@ -27,13 +27,9 @@ export type MockHcmMode =
   | 'stale_version'
   | 'malformed'
   | 'slow'
-  | 'version_skew'
-  | 'unreachable';
+  | 'version_skew';
 
-export type ReachabilityState =
-  | 'on'
-  | 'off'
-  | { readonly mode: 'flaky'; readonly failureRate: number };
+export type ReachabilityState = 'on' | 'off';
 
 // ─── Snapshot rows (mirror of GET /admin/state) ──────────────────────────────
 
@@ -171,7 +167,7 @@ export class MockHcmHarnessAssertionError extends Error {
   }
 }
 
-/** Thrown for transport / wiring failures and not-yet-implemented features. */
+/** Thrown for transport / wiring failures against the mock. */
 export class MockHcmHarnessError extends Error {
   constructor(message: string, cause?: unknown) {
     super(message, cause !== undefined ? { cause } : undefined);

@@ -55,7 +55,7 @@ export class OutboxWorker {
     private readonly store: OutboxStore,
     private readonly balance: BalanceService,
     @Inject(HCM_PORT) private readonly hcm: HcmPort,
-    @Inject('OUTBOX_WORKER_OPTIONS') options: OutboxWorkerOptions = {},
+    @Inject('OUTBOX_WORKER_OPTIONS') options: OutboxWorkerOptions,
   ) {
     this.batchSize = options.batchSize ?? 10;
     this.baseBackoffMs = options.baseBackoffMs ?? 1_000;

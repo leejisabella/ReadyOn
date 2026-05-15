@@ -37,7 +37,7 @@ export class InboxProcessor {
     private readonly employment: EmploymentService,
     private readonly leaveTypes: LeaveTypeAvailabilityService,
     private readonly bootstrap: EmployeeBootstrapService,
-    @Inject('INBOX_PROCESSOR_OPTIONS') options: InboxProcessorOptions = {},
+    @Inject('INBOX_PROCESSOR_OPTIONS') options: InboxProcessorOptions,
   ) {
     this.batchSize = options.batchSize ?? 50;
     this.now = options.now ?? Date.now;

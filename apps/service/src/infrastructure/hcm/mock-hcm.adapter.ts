@@ -108,20 +108,53 @@ export class MockHcmAdapter implements HcmPort {
 
   // ── Mutations ────────────────────────────────────────────────────────────
 
-  reserveBalance(args: ReserveBalanceArgs, idempotencyKey: string): Promise<HcmMutationResponse> {
-    return this.json(
+  async reserveBalance(
+    args: ReserveBalanceArgs,
+    idempotencyKey: string,
+  ): Promise<HcmMutationResponse> {
+    const response = await this.json(
       { method: 'POST', path: '/balances/reserve', employeeIdHint: args.employeeId },
       HcmMutationResponseSchema,
       { body: serializeMutationArgs(args), idempotencyKey },
     );
+    this.assertDeltaMatches(response, args.units.neg(), '/balances/reserve');
+    return response;
   }
 
-  releaseBalance(args: ReleaseBalanceArgs, idempotencyKey: string): Promise<HcmMutationResponse> {
-    return this.json(
+  async releaseBalance(
+    args: ReleaseBalanceArgs,
+    idempotencyKey: string,
+  ): Promise<HcmMutationResponse> {
+    const response = await this.json(
       { method: 'POST', path: '/balances/release', employeeIdHint: args.employeeId },
       HcmMutationResponseSchema,
       { body: serializeMutationArgs(args), idempotencyKey },
     );
+    this.assertDeltaMatches(response, args.units, '/balances/release');
+    return response;
+  }
+
+  /**
+   * TRD §13.3 transaction-confirmation cross-check.
+   *
+   *   - `deltaApplied == 0` while a non-zero delta was requested → SUSPECT_NO_OP.
+   *   - `deltaApplied != requested`                             → HCM_RESPONSE_INVALID.
+   *
+   * Both are surfaced as {@link HcmContractViolation}. The reconciler /
+   * outbox worker treats this exactly the same as a schema failure — the
+   * defensive layer's job is to refuse to commit the (likely-wrong) response.
+   */
+  private assertDeltaMatches(
+    response: HcmMutationResponse,
+    requestedDelta: import('decimal.js').default,
+    path: string,
+  ): void {
+    if (!response.deltaApplied.eq(requestedDelta)) {
+      throw new HcmContractViolation(
+        `Mock HCM ${path}: deltaApplied=${response.deltaApplied.toFixed()} does not match requested ${requestedDelta.toFixed()}`,
+        [],
+      );
+    }
   }
 
   // ── Transaction history (TRD §13.2.1) ────────────────────────────────────

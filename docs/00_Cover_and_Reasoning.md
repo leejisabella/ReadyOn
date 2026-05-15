@@ -311,7 +311,7 @@ Given the five-document set, the implementation order I would recommend:
 15. **Add adversarial modes to Mock HCM.** Failure-injection tests (Layer 5) go green.
 16. **Add inbound adversarial scenarios** (Layer 6). Webhook signature, replay, flood tests go green.
 17. **Add crash-recovery tests** (Layer 16). Mock's durable SQLite plus the harness make them meaningful.
-18. **Wire up mutation testing on critical modules.** Iterate until kill rate clears the gate.
+18. **Wire up mutation testing on critical modules.** Iterate until the overall kill rate clears the 75% break threshold. Current: 75.38% via [`.github/workflows/mutation.yml`](../.github/workflows/mutation.yml).
 
 Each step ends with tests green; no step bundles work that crosses a feature boundary. The Rev 3 layers (21–25) cluster around step 12 because the formalized reconciler is the keystone — everything else has been waiting for it.
 

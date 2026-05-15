@@ -95,7 +95,7 @@ export class ProvisionalReconciler {
     @Inject(HCM_PORT) private readonly hcm: HcmPort,
     @Inject(DATABASE) private readonly db: Database,
     @Inject('PROVISIONAL_RECONCILER_OPTIONS')
-    options: ProvisionalReconcilerOptions = {},
+    options: ProvisionalReconcilerOptions,
   ) {
     this.historyQueryWindowMs = options.historyQueryWindowMs ?? HISTORY_WINDOW_MS_DEFAULT;
     this.staleAfterMs = options.staleAfterMs ?? STALE_AFTER_MS_DEFAULT;

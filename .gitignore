@@ -10,6 +10,10 @@ build/
 coverage/
 .nyc_output/
 
+# Stryker mutation testing
+.stryker-tmp/
+reports/
+
 # Local SQLite databases (service + mock HCM)
 *.sqlite
 *.sqlite-journal

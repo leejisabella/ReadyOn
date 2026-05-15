@@ -277,5 +277,99 @@ describe('CanonicalInputSerializer — TRD §14.4 rules', () => {
       const spec = fk.object({ count: fk.integer });
       expect(() => ser.canonicalize({ count: 1.5 }, spec)).toThrow(CanonicalSerializationError);
     });
+
+    it('error.name and error.message both identify the failure class and path', () => {
+      const spec = fk.object({ units: fk.decimal(2) });
+      try {
+        ser.canonicalize({ units: {} }, spec);
+        fail('should have thrown');
+      } catch (e) {
+        expect((e as Error).name).toBe('CanonicalSerializationError');
+        // Message format is `canonicalize at <path>: <message>` (or `<root>` when path is empty).
+        expect((e as Error).message).toMatch(/^canonicalize at units: /);
+      }
+    });
+
+    it('uses <root> in the message when the error is at the top-level (no path)', () => {
+      try {
+        ser.canonicalize(42, fk.string);
+        fail('should have thrown');
+      } catch (e) {
+        expect((e as Error).message).toMatch(/^canonicalize at <root>: /);
+      }
+    });
+
+    // null/undefined are absorbed by the rule-6 early return (TRD §14.4) and
+    // never reach the type discriminator. Coverage of the typeOf branches for
+    // those values is exercised indirectly via the array element + object
+    // field tests below.
+    it.each([
+      [[], 'array'],
+      [{}, 'object'],
+      [true, 'boolean'],
+      [42, 'number'],
+    ] as const)('reports typeOf(%p) as %s in the error message', (input, expectedTypeName) => {
+      try {
+        ser.canonicalize(input, fk.string);
+        fail('should have thrown');
+      } catch (e) {
+        expect((e as Error).message).toContain(`got ${expectedTypeName}`);
+      }
+    });
+  });
+
+  describe('ISO_DATETIME_RE — datetime parser (TRD §14.4 rule 4)', () => {
+    it.each([
+      '2025-01-15T10:00:00Z',
+      '2025-01-15T10:00:00.000Z',
+      '2025-01-15T10:00:00.123456789Z',
+      '2025-01-15T10:00:00+09:00',
+      '2025-01-15T10:00:00-05:00',
+      '2025-01-15T10:00:00+0930', // colon-less offset
+    ])('accepts the well-formed datetime string %s', (input) => {
+      expect(() => ser.canonicalize(input, fk.datetime)).not.toThrow();
+    });
+
+    it.each([
+      '2025-01-15T10:00:00', // missing timezone
+      '2025-01-15T10:00:00.123', // milliseconds without Z
+      '2025-01-15T10:00:00abc', // trailing junk
+      'X025-01-15T10:00:00Z', // non-digit year
+      '2025-01-15T10:00:00+9:00', // single-digit offset hour
+      '2025-01-15T10:00:00+09:0', // single-digit offset minute
+    ])('rejects the malformed datetime string %s', (input) => {
+      expect(() => ser.canonicalize(input, fk.datetime)).toThrow(
+        /not ISO-8601 date or datetime/,
+      );
+    });
+  });
+
+  describe('null / undefined handling for primitives (TRD §14.4 rule 6)', () => {
+    it('declared-but-null array elements remain JSON null in the canonical output', () => {
+      const spec = fk.array(fk.string);
+      const out = ser.canonicalize([null, 'x'], spec).toString();
+      expect(out).toBe('[null,"x"]');
+    });
+
+    it('drops declared object fields with undefined values, not just null', () => {
+      const spec = fk.object({ a: fk.string, b: fk.string });
+      const hashWithUndef = ser.hash({ a: 'x', b: undefined }, spec);
+      const hashWithoutB = ser.hash({ a: 'x' }, spec);
+      const hashWithNullB = ser.hash({ a: 'x', b: null }, spec);
+      expect(hashWithUndef).toBe(hashWithoutB);
+      expect(hashWithUndef).toBe(hashWithNullB);
+    });
+  });
+
+  describe('object spec rejects non-objects', () => {
+    // null/undefined are absorbed by the rule-6 early return (TRD §14.4) and
+    // produce JSON null rather than an error.
+    it.each([[[]], ['foo'], [42]] as const)(
+      'rejects %p when an object is required',
+      (input) => {
+        const spec = fk.object({ a: fk.string });
+        expect(() => ser.canonicalize(input, spec)).toThrow(CanonicalSerializationError);
+      },
+    );
   });
 });

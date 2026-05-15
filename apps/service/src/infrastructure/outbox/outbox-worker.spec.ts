@@ -165,10 +165,42 @@ describe('OutboxWorker', () => {
         const entry = transientCtx.store.find(id);
         expect(entry?.state).toBe('PENDING');
         expect(entry?.attempts).toBe(1);
-        expect(new Date(entry!.nextAttemptAt).getTime()).toBeGreaterThan(Date.now() - 200);
+        // next_attempt_at must be in the future — the backoff is applied as
+        // `now + backoffMs`, never `now - backoffMs`.
+        expect(new Date(entry!.nextAttemptAt).getTime()).toBeGreaterThan(Date.now());
       } finally {
         await transientCtx.app.close();
       }
+    });
+
+    it('marks SUSPECT_NO_OP and increments result.suspectNoOp on HcmContractViolation (TRD §13.3)', async () => {
+      // silent_no_op mode: HCM returns 200 but deltaApplied=0. The adapter
+      // raises HcmContractViolation; the worker must route it to a distinct
+      // counter and a non-terminal "suspect" state.
+      await ctx.harness.setMode('silent_no_op');
+      const id = enqueueMutation(ctx.store, 'RESERVE_BALANCE');
+      const result = await ctx.worker.tick();
+      expect(result.suspectNoOp).toBe(1);
+      expect(result.permanent).toBe(0);
+      expect(result.transient).toBe(0);
+      const entry = ctx.store.find(id);
+      expect(entry?.state).toBe('SUSPECT_NO_OP');
+    });
+
+    it('fails permanently for BOOTSTRAP_EMPLOYEE / RECONCILE_PROVISIONAL — TRD §10.3 reserves these types but they have no outbox producer', async () => {
+      const id = randomUUID();
+      ctx.store.enqueue({
+        id,
+        type: 'BOOTSTRAP_EMPLOYEE',
+        payload: { employeeId: 'emp-1' },
+        idempotencyKey: `idem-${id}`,
+        at: new Date().toISOString(),
+      });
+      const result = await ctx.worker.tick();
+      expect(result.permanent).toBe(1);
+      const entry = ctx.store.find(id);
+      expect(entry?.state).toBe('FAILED_PERMANENT');
+      expect(entry?.lastError).toMatch(/no producer/);
     });
 
     it('escalates to FAILED_RETRYABLE after max attempts of transient failures', async () => {
@@ -221,6 +253,26 @@ describe('OutboxWorker', () => {
       await ctx.cleanup();
     });
 
+    it('does not reclaim a freshly-claimed IN_FLIGHT row (the cutoff is `now - inFlightTimeoutMs`, not `now + ...`)', async () => {
+      // A long timeout means a freshly-claimed entry is well within the window;
+      // it must stay IN_FLIGHT until the worker that owns it completes. If the
+      // cutoff arithmetic flipped sign (`now + timeout`), every IN_FLIGHT row
+      // would be older than the (future) cutoff and incorrectly reclaimed.
+      const freshCtx = await buildContext({ inFlightTimeoutMs: 10 * 60_000 });
+      try {
+        const id = enqueueMutation(freshCtx.store, 'RESERVE_BALANCE', { units: '1' });
+        const claimed = freshCtx.store.claim({ now: new Date().toISOString(), batchSize: 1 });
+        expect(claimed[0]!.id).toBe(id);
+        expect(freshCtx.store.find(id)?.state).toBe('IN_FLIGHT');
+        // Sweep with the same `now`: nothing stale yet.
+        const result = await freshCtx.worker.tick();
+        expect(result.claimed).toBe(0);
+        expect(freshCtx.store.find(id)?.state).toBe('IN_FLIGHT');
+      } finally {
+        await freshCtx.cleanup();
+      }
+    });
+
     it('reclaims stale IN_FLIGHT rows after the timeout', async () => {
       const id = enqueueMutation(ctx.store, 'RESERVE_BALANCE', { units: '1' });
       // Manually push into IN_FLIGHT to simulate a crashed worker.
@@ -234,6 +286,46 @@ describe('OutboxWorker', () => {
       const result = await ctx.worker.tick();
       expect(result.succeeded).toBe(1);
       expect(ctx.store.find(id)?.state).toBe('SUCCEEDED');
+    });
+  });
+
+  // Direct-instantiation unit tests for the pure backoff arithmetic. Skips the
+  // NestJS / HCM / DB scaffolding because none of those dependencies are
+  // exercised by `backoffMs`.
+  describe('backoffMs (TRD §16: baseBackoffMs, maxBackoffMs)', () => {
+    const build = (opts: ConstructorParameters<typeof OutboxWorker>[3]): OutboxWorker =>
+      new OutboxWorker({} as never, {} as never, {} as never, opts);
+
+    it('returns base * 2^attempts plus deterministic jitter (random=0.5)', () => {
+      const worker = build({ baseBackoffMs: 10, maxBackoffMs: 10_000, random: () => 0.5 });
+      const backoff = (worker as unknown as { backoffMs(a: number): number }).backoffMs.bind(worker);
+      // exp = min(10_000, 10 * 1) = 10; jitter = 10 * 0.25 * 0.5 = 1.25; total = 11.25.
+      expect(backoff(0)).toBeCloseTo(11.25);
+      // exp = min(10_000, 10 * 4) = 40; jitter = 40 * 0.25 * 0.5 = 5; total = 45.
+      expect(backoff(2)).toBeCloseTo(45);
+    });
+
+    it('caps exponential growth at maxBackoffMs', () => {
+      const worker = build({ baseBackoffMs: 1, maxBackoffMs: 100, random: () => 0 });
+      const backoff = (worker as unknown as { backoffMs(a: number): number }).backoffMs.bind(worker);
+      // 1 * 2^20 = 1_048_576, capped at 100.
+      expect(backoff(20)).toBe(100);
+    });
+
+    it('caps exp+jitter at maxBackoffMs', () => {
+      const worker = build({ baseBackoffMs: 100, maxBackoffMs: 100, random: () => 1 });
+      const backoff = (worker as unknown as { backoffMs(a: number): number }).backoffMs.bind(worker);
+      // exp = 100 (already at cap); jitter = 25; total clamps at 100.
+      expect(backoff(0)).toBe(100);
+    });
+
+    it('honours retryAfterMs when supplied, capped at maxBackoffMs', () => {
+      const worker = build({ baseBackoffMs: 10, maxBackoffMs: 1_000, random: () => 0 });
+      const backoff = (worker as unknown as {
+        backoffMs(a: number, r?: number): number;
+      }).backoffMs.bind(worker);
+      expect(backoff(5, 50)).toBe(50); // under cap → honoured
+      expect(backoff(5, 10_000)).toBe(1_000); // over cap → clamped
     });
   });
 });

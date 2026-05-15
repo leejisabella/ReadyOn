@@ -1,0 +1,52 @@
+# Stage 9 of the pipeline documented in `Test Cases and Proof of Coverage`,
+# CI Pipeline section: Stryker mutation testing on critical modules. Per
+# the doc this runs on Merge to main; we also schedule a nightly run so
+# regressions on slow-moving paths surface within a day.
+#
+# Mutation testing takes ~22 min wall-clock against the current suite, so
+# it sits outside the every-commit gates in `ci.yml`. The break threshold
+# is enforced by Stryker (`thresholds.break: 75` in stryker.config.json).
+
+name: Mutation Testing (Stage 9)
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Nightly at 07:00 UTC (midnight Pacific). Cron uses UTC.
+    - cron: '0 7 * * *'
+  workflow_dispatch: # manual trigger from the Actions tab
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: false # don't kill an in-flight nightly run
+
+jobs:
+  mutation:
+    name: Stryker mutation testing (Layer 9)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run mutation tests
+        run: npm run test:mutation
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stryker-mutation-report
+          path: |
+            reports/mutation/mutation.html
+            reports/mutation/mutation.json
+          retention-days: 30

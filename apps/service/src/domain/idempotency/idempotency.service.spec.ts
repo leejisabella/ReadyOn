@@ -35,4 +35,27 @@ describe('IdempotencyService', () => {
     const resolution = service.resolve<typeof payload>('k', 'h');
     expect(resolution).toEqual({ kind: 'replay', response: payload });
   });
+
+  it('stamps `expiresAt` at `createdAt + ttlMs` (TRD §14.1, §16: default 7 days)', () => {
+    const before = Date.now();
+    service.remember('k', 'h', { ok: true });
+    const row = db.prepare('SELECT created_at, expires_at FROM idempotency_key WHERE key = ?').get('k') as
+      | { created_at: string; expires_at: string }
+      | undefined;
+    expect(row).toBeDefined();
+    const created = Date.parse(row!.created_at);
+    const expires = Date.parse(row!.expires_at);
+    expect(created).toBeGreaterThanOrEqual(before);
+    // Default TTL is 7 days = 604_800_000 ms; the gap must match exactly.
+    expect(expires - created).toBe(7 * 24 * 60 * 60 * 1_000);
+  });
+
+  it('honours an explicit non-default ttlMs override', () => {
+    service.remember('k', 'h', { ok: true }, 60_000);
+    const row = db.prepare('SELECT created_at, expires_at FROM idempotency_key WHERE key = ?').get('k') as {
+      created_at: string;
+      expires_at: string;
+    };
+    expect(Date.parse(row.expires_at) - Date.parse(row.created_at)).toBe(60_000);
+  });
 });

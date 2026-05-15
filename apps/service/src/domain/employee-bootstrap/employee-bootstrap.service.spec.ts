@@ -86,7 +86,7 @@ describe('EmployeeBootstrapService', () => {
       expect(employment.locationAt('emp-1', '2025-06-01')).toBe('loc-A');
     });
 
-    it('translates HcmEmployeeNotFoundError into DomainError(EMPLOYEE_NOT_BOOTSTRAPPED)', async () => {
+    it('translates HcmEmployeeNotFoundError into DomainError(EMPLOYEE_NOT_BOOTSTRAPPED) with a message naming the missing employee', async () => {
       const service = new EmployeeBootstrapService(
         store,
         employment,
@@ -103,6 +103,9 @@ describe('EmployeeBootstrapService', () => {
       } catch (err) {
         expect(err).toBeInstanceOf(DomainError);
         expect((err as DomainError).code).toBe('EMPLOYEE_NOT_BOOTSTRAPPED');
+        // The message identifies which employee was missing — this string is
+        // surfaced to operators in error responses, so it must include the id.
+        expect((err as DomainError).message).toMatch(/emp-ghost/);
       }
     });
 
@@ -178,6 +181,83 @@ describe('EmployeeBootstrapService', () => {
       expect(row?.hcmVersion).toBe(1n); // first writer wins on Employee row identity
       // Employment, however, IS version-gated and reflects the newer payload.
       expect(employment.locationAt('emp-3', '2026-06-01')).toBe('loc-B');
+    });
+  });
+
+  describe('EMPLOYEE_BOOTSTRAPPED audit emission (TRD §11.2)', () => {
+    function listBootstrapAudits(employeeId: string): Array<{ actor: string; after: unknown }> {
+      return audit
+        .findByEntity('Employee', employeeId)
+        .filter((row) => row.action === 'EMPLOYEE_BOOTSTRAPPED')
+        .map((row) => ({ actor: row.actor, after: row.after }));
+    }
+
+    it('emits exactly once with actor=inbox after a successful WEBHOOK bootstrap; emits zero times on a duplicate', async () => {
+      const service = new EmployeeBootstrapService(store, employment, auditService, makeHcmStub());
+      await service.handleEmployeeCreatedEvent({
+        employeeId: 'emp-wh',
+        hcmVersion: 1n,
+        initialEmployment: { locationId: 'loc-A', effectiveFrom: '2026-01-01' },
+      });
+      // second delivery loses INSERT OR IGNORE → must not re-emit
+      await service.handleEmployeeCreatedEvent({
+        employeeId: 'emp-wh',
+        hcmVersion: 2n,
+        initialEmployment: { locationId: 'loc-A', effectiveFrom: '2026-01-01' },
+      });
+      const events = listBootstrapAudits('emp-wh');
+      expect(events).toHaveLength(1);
+      expect(events[0]!.actor).toBe('inbox');
+      expect(events[0]!.after).toEqual({ source: 'WEBHOOK' });
+    });
+
+    it('emits with actor=saga on a LAZY_PULL bootstrap', async () => {
+      const service = new EmployeeBootstrapService(
+        store,
+        employment,
+        auditService,
+        makeHcmStub({ fetchEmployee: async () => sampleEmployeeResponse() }),
+      );
+      await service.ensureBootstrapped('emp-1');
+      const events = listBootstrapAudits('emp-1');
+      expect(events).toHaveLength(1);
+      expect(events[0]!.actor).toBe('saga');
+      expect(events[0]!.after).toEqual({ source: 'LAZY_PULL' });
+    });
+
+    it('emits with actor=batch-reconciler on a BATCH bootstrap', async () => {
+      const service = new EmployeeBootstrapService(store, employment, auditService, makeHcmStub());
+      await service.bootstrapFromBatch({ employeeId: 'emp-batch', hcmVersion: 1n });
+      // second batch tick on the same employee must not re-emit
+      await service.bootstrapFromBatch({ employeeId: 'emp-batch', hcmVersion: 1n });
+      const events = listBootstrapAudits('emp-batch');
+      expect(events).toHaveLength(1);
+      expect(events[0]!.actor).toBe('batch-reconciler');
+      expect(events[0]!.after).toEqual({ source: 'BATCH' });
+    });
+
+    it('does not emit when lazy-pull loses an insert race to a concurrent WEBHOOK', async () => {
+      const service = new EmployeeBootstrapService(
+        store,
+        employment,
+        auditService,
+        makeHcmStub({
+          fetchEmployee: async () => {
+            store.insertIfAbsent({
+              employeeId: 'emp-1',
+              bootstrappedAt: '2026-05-11T10:00:00.000Z',
+              bootstrapSource: 'WEBHOOK',
+              hcmVersion: 1n,
+              lastSeenInBatchAt: null,
+            });
+            return sampleEmployeeResponse();
+          },
+        }),
+      );
+      await service.ensureBootstrapped('emp-1');
+      // The race-winning WEBHOOK insert came from raw `store.insertIfAbsent`,
+      // not via the service — so there should be ZERO audit events here.
+      expect(listBootstrapAudits('emp-1')).toHaveLength(0);
     });
   });
 

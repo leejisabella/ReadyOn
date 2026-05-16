@@ -10,7 +10,7 @@
   },
   "reporters": ["progress", "clear-text", "html", "json"],
   "coverageAnalysis": "perTest",
-  "concurrency": 1,
+  "concurrency": 4,
   "timeoutMS": 180000,
   "checkers": ["typescript"],
   "tsconfigFile": "tsconfig.json",

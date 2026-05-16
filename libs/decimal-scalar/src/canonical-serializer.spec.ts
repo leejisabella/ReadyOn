@@ -273,9 +273,19 @@ describe('CanonicalInputSerializer — TRD §14.4 rules', () => {
       ).toThrow(/safe integer range/);
     });
 
-    it('rejects non-integers in integer slot', () => {
-      const spec = fk.object({ count: fk.integer });
-      expect(() => ser.canonicalize({ count: 1.5 }, spec)).toThrow(CanonicalSerializationError);
+    it('rejects non-integers, non-finite numbers, and Invalid Date in their respective slots', () => {
+      const intSpec = fk.object({ count: fk.integer });
+      expect(() => ser.canonicalize({ count: 1.5 }, intSpec)).toThrow(CanonicalSerializationError);
+      // Non-finite numbers must be rejected by the `Number.isFinite` guard in
+      // coerceNumericForInteger before the isInteger check is reached.
+      expect(() => ser.canonicalize({ count: Infinity }, intSpec)).toThrow(/expected finite integer/);
+      expect(() => ser.canonicalize({ count: -Infinity }, intSpec)).toThrow(/expected finite integer/);
+      expect(() => ser.canonicalize({ count: NaN }, intSpec)).toThrow(/expected finite integer/);
+      // Invalid Date objects fail the Number.isNaN(getTime()) guard in coerceToDate.
+      const dateSpec = fk.object({ startDate: fk.date });
+      expect(() => ser.canonicalize({ startDate: new Date('not-a-date') }, dateSpec)).toThrow(
+        /Invalid Date/,
+      );
     });
 
     it('error.name and error.message both identify the failure class and path', () => {

@@ -129,7 +129,7 @@ describe('HcmHealthMonitor', () => {
   });
 
   describe('onStateChange', () => {
-    it('fires once per HEALTHY↔UNHEALTHY transition, not per outcome', () => {
+    it('fires once per HEALTHY↔UNHEALTHY transition, not per outcome, and resetForTest restores listener semantics', () => {
       const m = new HcmHealthMonitor(fastConfig(clock));
       const states: string[] = [];
       m.onStateChange((s) => states.push(s));
@@ -139,14 +139,32 @@ describe('HcmHealthMonitor', () => {
       expect(states).toEqual([]);
       m.recordFailure('transient');
       expect(states).toEqual(['UNHEALTHY']);
+      // Outage start is captured at the first flip and must not move on
+      // further failures while already UNHEALTHY.
+      const firstOutageStart = m.outageStartedAt();
+      expect(firstOutageStart).toEqual(new Date(0));
 
       m.recordFailure('transient');
       expect(states).toEqual(['UNHEALTHY']); // no double-fire
+      clock.advance(5_000);
+      m.recordFailure('transient');
+      expect(m.outageStartedAt()).toEqual(firstOutageStart); // unchanged
 
       m.recordSuccess();
       clock.advance(2_000);
       m.recordSuccess();
       expect(states).toEqual(['UNHEALTHY', 'HEALTHY']);
+
+      // resetForTest while HEALTHY must NOT notify; while UNHEALTHY it must.
+      m.resetForTest();
+      expect(states).toEqual(['UNHEALTHY', 'HEALTHY']); // unchanged
+      m.recordFailure('transient');
+      m.recordFailure('transient');
+      m.recordFailure('transient');
+      expect(states).toEqual(['UNHEALTHY', 'HEALTHY', 'UNHEALTHY']);
+      m.resetForTest();
+      expect(states).toEqual(['UNHEALTHY', 'HEALTHY', 'UNHEALTHY', 'HEALTHY']);
+      expect(m.outageStartedAt()).toBeNull();
     });
 
     it('unsubscribe stops subsequent notifications', () => {
